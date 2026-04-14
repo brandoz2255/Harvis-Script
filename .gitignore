@@ -1,0 +1,65 @@
+# Build directories
+build/
+cmake-build-*/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Compiled files
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+hs
+hs.exe
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+Makefile
+cmake_install.cmake
+
+# Test executables
+test_*
+*_test
+
+# Coverage files
+*.gcno
+*.gcda
+*.gcov
+htmlcov/
+coverage/
+
+# AddressSanitizer logs
+*.log
+*.txt
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Editor backups
+*~
+*.bak
+*.swp
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Logs
+*.log
+logs/
