@@ -444,9 +444,12 @@ class NewExpr : public Expr {
 public:
     Expr::Ptr callee;
     std::vector<Expr::Ptr> arguments;
+    std::vector<Type> typeArgs;
     
-    NewExpr(SourceLocation loc, Expr::Ptr c, std::vector<Expr::Ptr> args)
-        : Expr(loc), callee(std::move(c)), arguments(std::move(args)) {}
+    NewExpr(SourceLocation loc, Expr::Ptr c, std::vector<Expr::Ptr> args,
+            std::vector<Type> ta = {})
+        : Expr(loc), callee(std::move(c)), arguments(std::move(args)),
+          typeArgs(std::move(ta)) {}
     
     void accept(Visitor& visitor) override { visitor.visitNewExpr(this); }
     std::string toString() const override { return "NewExpr(" + callee->toString() + ")"; }

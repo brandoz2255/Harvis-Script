@@ -186,6 +186,7 @@ map["undefined"] = TokenType::UNDEFINED_KEYWORD;
     map["catch"] = TokenType::CATCH_KEYWORD;
     map["throw"] = TokenType::THROW_KEYWORD;
     map["finally"] = TokenType::FINALLY_KEYWORD;
+    map["func"] = TokenType::FUNCTION_KEYWORD;
     return map;
 }();
 

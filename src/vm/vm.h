@@ -65,6 +65,9 @@ private:
     std::unordered_map<std::string, Value> modules;
     MapObj* currentModule;
 
+    // Generic type cache (mangled name -> instantiated function/class)
+    std::unordered_map<std::string, Value> genericCache;
+
     // Try/Catch support
     struct TryFrame {
         int tryBodyStart;    // IP where try body begins

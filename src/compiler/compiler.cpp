@@ -362,6 +362,46 @@ void Compiler::visitLambdaExpr(LambdaExpr* expr) {
 }
 
 void Compiler::visitNewExpr(NewExpr* expr) {
+    // Generic new expression: new Type<T>(args)
+    if (!expr->typeArgs.empty()) {
+        // Mangle the class name with type args
+        std::string calleeName = "unknown";
+        if (auto ident = std::dynamic_pointer_cast<IdentifierExpr>(expr->callee)) {
+            calleeName = ident->name;
+        }
+        std::string mangledName = mangleTypeName(calleeName, expr->typeArgs);
+        
+        // Push type arg names as string constants
+        for (const auto& ta : expr->typeArgs) {
+            int idx = chunk.findOrAddStringConstant(ta.toString());
+            emitByte(Opcode::OP_CONST_STRING);
+            emitByte(static_cast<uint8_t>(idx));
+        }
+        
+        // Push the class name
+        int nameIdx = chunk.findOrAddStringConstant(mangledName);
+        emitByte(Opcode::OP_CONST_STRING);
+        emitByte(static_cast<uint8_t>(nameIdx));
+        
+        // Push constructor name
+        int ctorIdx = chunk.findOrAddStringConstant("constructor");
+        emitByte(Opcode::OP_CONST_STRING);
+        emitByte(static_cast<uint8_t>(ctorIdx));
+        
+        // Push constructor arguments
+        int count = static_cast<int>(expr->arguments.size());
+        for (const auto& arg : expr->arguments) {
+            arg->accept(*this);
+        }
+        
+        // OP_NEW_CLASS_GENERIC: argCount (low byte), typeArgCount (high byte)
+        emitByte(Opcode::OP_NEW_CLASS_GENERIC);
+        emitByte(static_cast<uint8_t>(count));
+        emitByte(static_cast<uint8_t>(expr->typeArgs.size()));
+        return;
+    }
+    
+    // Regular new expression: new Type(args)
     expr->callee->accept(*this);
     
     int nameIdx = chunk.findOrAddStringConstant("constructor");
@@ -1120,6 +1160,40 @@ void Compiler::visitCallExpr(CallExpr* expr) {
             emitByte(Opcode::OP_DELETE);
             return;
         }
+    }
+    
+    // Generic function call with explicit type args
+    if (!expr->typeArgs.empty()) {
+        // Get callee name for mangling
+        std::string calleeName = "__unknown";
+        if (auto calleeIdent = std::dynamic_pointer_cast<IdentifierExpr>(expr->callee)) {
+            calleeName = calleeIdent->name;
+        }
+        // Mangle the function name with type args
+        std::string mangledName = mangleTypeName(calleeName, expr->typeArgs);
+        
+        // Push callee (the function)
+        expr->callee->accept(*this);
+        
+        // Push arguments
+        int argCount = 0;
+        for (const auto& arg : expr->arguments) {
+            arg->accept(*this);
+            argCount++;
+        }
+        
+        // Push type arg names as string constants (on top of stack, so VM pops them first)
+        for (int i = static_cast<int>(expr->typeArgs.size()) - 1; i >= 0; i--) {
+            int idx = chunk.findOrAddStringConstant(expr->typeArgs[i].toString());
+            emitByte(Opcode::OP_CONST_STRING);
+            emitByte(static_cast<uint8_t>(idx));
+        }
+        
+        // OP_CALL_GENERIC: argCount (low byte), typeArgCount (high byte)
+        emitByte(Opcode::OP_CALL_GENERIC);
+        emitByte(static_cast<uint8_t>(argCount));
+        emitByte(static_cast<uint8_t>(expr->typeArgs.size()));
+        return;
     }
     
     // Regular function call

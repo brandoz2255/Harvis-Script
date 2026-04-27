@@ -771,6 +771,136 @@ case Opcode::OP_GET_PROPERTY: {
                 break;
             }
             
+         case Opcode::OP_CALL_GENERIC: {
+                int argCount = chunk->code[callStack.top().ip++];
+                int typeArgCount = chunk->code[callStack.top().ip++];
+
+                // Pop type args (on top of stack)
+                for (int i = 0; i < typeArgCount; i++) {
+                    pop();
+                }
+
+                // Save args and callee
+                std::vector<Value> savedArgs;
+                for (int i = 0; i < argCount; i++) {
+                    savedArgs.push_back(pop());
+                }
+                Value callee = pop();
+
+                // Push args back in reverse order (so first arg is at bottom)
+                for (int i = static_cast<int>(savedArgs.size()) - 1; i >= 0; i--) {
+                    stack.push_back(savedArgs[i]);
+                }
+
+                if (callee.isObject() && callee.asObject()) {
+                    auto* obj = callee.asObject();
+
+                    if (obj->type == ObjectType::Closure) {
+                        auto* closure = reinterpret_cast<Closure*>(obj);
+                        std::string cacheKey = closure->function->name;
+                        if (!genericCache.count(cacheKey)) {
+                            std::string mangledName = closure->function->name;
+                            Function* instantiated = new Function(mangledName, closure->function->chunk, closure->function->arity);
+                            instantiated->isClassMethod = closure->function->isClassMethod;
+                            genericCache[cacheKey] = Value(instantiated);
+                        }
+
+                        Value cached = genericCache[cacheKey];
+                        if (cached.isObject() && cached.asObject() && cached.asObject()->type == ObjectType::Function) {
+                            auto* cachedFunc = reinterpret_cast<Function*>(cached.asObject());
+                            CallFrame frame;
+                            frame.function = cachedFunc;
+                            frame.chunk = &cachedFunc->chunk;
+                            frame.ip = 0;
+                            frame.stackStart = 0;
+                            int arity = cachedFunc->arity;
+                            for (int i = 0; i < arity && i < argCount; i++) {
+                                frame.locals.push_back(stack[i]);
+                            }
+                            while (frame.locals.size() < static_cast<size_t>(arity)) {
+                                frame.locals.push_back(Value());
+                            }
+                            stack.push_back(callee);
+                            callStack.push(frame);
+                        }
+                    } else if (obj->type == ObjectType::Function) {
+                        auto* func = reinterpret_cast<Function*>(obj);
+                        std::string cacheKey = func->name;
+                        if (!genericCache.count(cacheKey)) {
+                            std::string mangledName = func->name;
+                            Function* instantiated = new Function(mangledName, func->chunk, func->arity);
+                            instantiated->isClassMethod = func->isClassMethod;
+                            genericCache[cacheKey] = Value(instantiated);
+                        }
+
+                        Value cached = genericCache[cacheKey];
+                        if (cached.isObject() && cached.asObject() && cached.asObject()->type == ObjectType::Function) {
+                            auto* cachedFunc = reinterpret_cast<Function*>(cached.asObject());
+                            CallFrame frame;
+                            frame.function = cachedFunc;
+                            frame.chunk = &cachedFunc->chunk;
+                            frame.ip = 0;
+                            frame.stackStart = 0;
+                            int arity = cachedFunc->arity;
+                            for (int i = 0; i < arity && i < argCount; i++) {
+                                frame.locals.push_back(stack[i]);
+                            }
+                            while (frame.locals.size() < static_cast<size_t>(arity)) {
+                                frame.locals.push_back(Value());
+                            }
+                            stack.push_back(callee);
+                            callStack.push(frame);
+                        }
+                    }
+                }
+                break;
+            }
+
+            case Opcode::OP_NEW_CLASS_GENERIC: {
+                int argCount = chunk->code[callStack.top().ip++];
+                int typeArgCount = chunk->code[callStack.top().ip++];
+
+                // Pop type argument strings
+                std::vector<std::string> typeArgNames;
+                for (int i = 0; i < typeArgCount; i++) {
+                    if (!stack.empty()) {
+                        typeArgNames.push_back(stack.back().toString());
+                        pop();
+                    }
+                }
+
+                // Pop constructor name
+                Value ctorNameVal = pop();
+                std::string ctorName = ctorNameVal.isString() ? ctorNameVal.toString() : "constructor";
+
+                // Pop class name (mangled)
+                Value classNameVal = pop();
+                std::string className = classNameVal.isString() ? classNameVal.toString() : "Unknown";
+
+                // Build cache key
+                std::string cacheKey = className;
+                for (const auto& ta : typeArgNames) {
+                    cacheKey += "_" + ta;
+                }
+
+                // Create or retrieve cached generic class
+                if (!genericCache.count(cacheKey)) {
+                    auto* newKlass = new ClassObj(className);
+                    genericCache[cacheKey] = Value(newKlass);
+                }
+
+                Value classVal = genericCache[cacheKey];
+                if (classVal.isObject() && classVal.asObject() && classVal.asObject()->type == ObjectType::Class) {
+                    auto* klass = reinterpret_cast<ClassObj*>(classVal.asObject());
+                    auto* instance = new Instance(klass);
+                    push(Value(instance));
+                } else {
+                    reportError("Cannot create instance from non-class: " + className);
+                    push(Value());
+                }
+            break;
+             }
+            
             case Opcode::OP_CONST_FUNCTION: {
                 int funcIndex = chunk->code[callStack.top().ip++];
                 Value funcVal = chunk->constants[funcIndex];

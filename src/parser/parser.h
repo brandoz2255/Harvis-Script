@@ -128,6 +128,7 @@ private:
     SelectCase parseSelectCase();
     Expr::Ptr parseMutex();
     Expr::Ptr parseWaitGroup();
+    Expr::Ptr parseNewExpr();
 };
 
 // Convenience function

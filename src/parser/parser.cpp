@@ -935,8 +935,26 @@ Expr::Ptr Parser::parseCall() {
      if (!expr) return nullptr;  // Prevent infinite loop
      
      while (true) {
-         if (match(TokenType::LEFT_PAREN)) {
+         // Check for generic type args followed by call: expr<Type>(args)
+         if (check(TokenType::LESS) && peekNext().type != TokenType::MINUS) {
              std::vector<Type> typeArgs;
+             advance();  // consume '<'
+             while (!check(TokenType::GREATER) && !isAtEnd()) {
+                 typeArgs.push_back(parseType());
+                 if (!match(TokenType::COMMA)) break;
+             }
+             consume(TokenType::GREATER, "Expect '>' after type arguments.");
+             // Must be followed by '(' to be a call
+             if (match(TokenType::LEFT_PAREN)) {
+                 auto args = parseArgumentList();
+                 expr = std::make_shared<CallExpr>(previous().location, expr, previous(), std::move(args), std::move(typeArgs));
+             } else {
+                 // Type args without call - this is unusual, skip them
+                 break;
+             }
+         } else if (match(TokenType::LEFT_PAREN)) {
+             std::vector<Type> typeArgs;
+             // Check for generic type args: expr<Type>(args)
              if (check(TokenType::LESS)) {
                  advance();
                  while (!check(TokenType::GREATER) && !isAtEnd()) {
@@ -1007,10 +1025,10 @@ Expr::Ptr Parser::parseCall() {
                  break;
              }
 } else if (check(TokenType::LESS) && peekNext().type == TokenType::MINUS) {
-             advance();
-             advance();  // Consume '<-'
-             expr = parseSend(std::move(expr));
-         } else if (match(TokenType::AS_KEYWORD)) {
+              advance();
+              advance();  // Consume '<-'
+              expr = parseSend(std::move(expr));
+          } else if (match(TokenType::AS_KEYWORD)) {
              // Type assertion: expr as Type
              Type assertType = parseType();
              expr = std::make_shared<TypeAssertExpr>(previous().location, expr, assertType);
@@ -1085,9 +1103,9 @@ Expr::Ptr Parser::parsePrimary() {
         return std::make_shared<ArrayLiteralExpr>(previous().location, elements);
     }
     
-   if (match(TokenType::NEW_KEYWORD)) {
-        return parseStructInstantiation();
-    }
+  if (match(TokenType::NEW_KEYWORD)) {
+         return parseNewExpr();
+     }
     
     if (match(TokenType::LEFT_BRACE)) {
         if (check(TokenType::RIGHT_BRACE)) {
@@ -1432,6 +1450,56 @@ Expr::Ptr Parser::parseWaitGroup() {
     consume(TokenType::RIGHT_PAREN, "Expect ')' after 'waitgroup'.");
     SourceLocation loc = previous().location;
     return std::make_shared<WaitGroupExpr>(loc);
+}
+
+Expr::Ptr Parser::parseNewExpr() {
+    // New keyword already consumed by parsePrimary()
+    auto name = advance();
+    if (name.type != TokenType::IDENTIFIER) {
+        error(name, "Expect type name after 'new'.");
+        return nullptr;
+    }
+    
+    // Check for generic type args: new TypeName<T>(...)
+    std::vector<Type> typeArgs;
+    if (match(TokenType::LESS)) {
+        typeArgs = parseTypeArgs();
+        consume(TokenType::GREATER, "Expect '>' after type arguments.");
+    }
+    
+    // Check if it's struct instantiation: new TypeName<T>{...}
+    if (check(TokenType::LEFT_BRACE)) {
+        std::vector<StructInstantiationExpr::Field> fields;
+        consume(TokenType::LEFT_BRACE, "Expect '{' after struct type name.");
+        
+        while (!check(TokenType::RIGHT_BRACE) && !isAtEnd()) {
+            StructInstantiationExpr::Field field;
+            auto fieldName = advance();
+            if (fieldName.type != TokenType::IDENTIFIER) {
+                error(fieldName, "Expected field name.");
+                break;
+            }
+            field.name = fieldName.lexeme;
+            consume(TokenType::COLON, "Expect ':' after field name.");
+            field.value = parseExpression();
+            fields.push_back(field);
+            if (!match(TokenType::COMMA)) break;
+        }
+        consume(TokenType::RIGHT_BRACE, "Expect '}' after struct fields.");
+        SourceLocation loc = name.location;
+        return std::make_shared<StructInstantiationExpr>(loc, name.lexeme, std::move(fields), std::move(typeArgs));
+    }
+    
+    // Class instantiation: new TypeName<T>(args)
+    std::vector<Expr::Ptr> args;
+    if (check(TokenType::LEFT_PAREN)) {
+        args = parseArgumentList();
+    }
+    
+    SourceLocation loc = name.location;
+    return std::make_shared<NewExpr>(loc, 
+        std::make_shared<IdentifierExpr>(loc, name.lexeme),
+        std::move(args), std::move(typeArgs));
 }
 
 Program parse(const std::string& source, const std::string& filename) {

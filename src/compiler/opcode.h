@@ -85,6 +85,8 @@ enum class Opcode : uint8_t {
     OP_NEW_INSTANCE,        // Pop class, create instance
     OP_INHERIT,             // Pop base, pop derived, set up base
     OP_METHOD,              // Pop method, pop name, bind method to class
+    OP_NEW_CLASS_GENERIC,   // argCount, typeArgCount: pop args, typeArgs, className, ctorName, create instance
+    OP_CALL_GENERIC,        // argCount, typeArgCount: pop args, typeArgs, fn, call
     
     // I/O
     OP_PRINT,               // Pop value, print to stdout
@@ -223,6 +225,8 @@ inline const char* opcodeName(Opcode op) {
         OP(OP_NEW_INSTANCE)
         OP(OP_INHERIT)
         OP(OP_METHOD)
+        OP(OP_NEW_CLASS_GENERIC)
+        OP(OP_CALL_GENERIC)
         OP(OP_NEW_STRUCT)
         OP(OP_GET_FIELD)
         OP(OP_SET_FIELD)
