@@ -32,6 +32,7 @@
 - errors.Is() and errors.As() equivalent added
 
 ### B2: Standard Library ✅ COMPLETE
+**Commit:** e92b39b
 **Created stdlib/ directory with:**
 - **math.hs:** add, subtract, multiply, divide, mod, pow, sqrt, abs, min, max, PI, E
 - **strings.hs:** concat, length, substring, toUpper, toLower, contains, startsWith, endsWith
