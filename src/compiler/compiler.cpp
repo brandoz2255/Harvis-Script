@@ -578,9 +578,17 @@ void Compiler::visitClassStmt(ClassStmt* stmt) {
     
     beginScope();
     
+    if (!stmt->typeParams.empty()) {
+        pushTypeParams(stmt->typeParams);
+    }
+    
     for (const auto& method : stmt->methods) {
         Compiler methodCompiler;
         methodCompiler.beginScope();
+        
+        if (!stmt->typeParams.empty()) {
+            methodCompiler.pushTypeParams(stmt->typeParams);
+        }
         
         for (const auto& param : method->parameters) {
             methodCompiler.declareVariable(param.first);
@@ -605,6 +613,10 @@ void Compiler::visitClassStmt(ClassStmt* stmt) {
         int methodNameIdx = chunk.findOrAddStringConstant(method->name);
         emitByte(Opcode::OP_METHOD);
         emitByte(static_cast<uint8_t>(methodNameIdx));
+    }
+    
+    if (!stmt->typeParams.empty()) {
+        popTypeParams();
     }
     
     endScope();

@@ -604,7 +604,7 @@ class ClassStmt : public Stmt {
 public:
     std::string name;
     std::vector<Expr::Ptr> superClass;
-    std::vector<std::pair<std::string, Type>> typeParams;
+    std::vector<std::string> typeParams;
     std::vector<std::pair<std::string, Type>> extendsTypes;
     std::vector<std::string> implements;
     std::vector<std::shared_ptr<FunctionStmt>> methods;
@@ -613,12 +613,12 @@ public:
     bool isFinal;
     
     ClassStmt(SourceLocation loc, std::string n, std::vector<Expr::Ptr> super,
-              std::vector<std::pair<std::string, Type>> params,
+              std::vector<std::string> tp,
               std::vector<std::pair<std::string, Type>> extends,
               std::vector<std::string> impl, std::vector<std::shared_ptr<FunctionStmt>> methods,
               std::vector<std::shared_ptr<VarDeclStmt>> fields, bool abstract = false, bool final = false)
         : Stmt(loc), name(std::move(n)), superClass(std::move(super)),
-          typeParams(std::move(params)), extendsTypes(std::move(extends)),
+          typeParams(std::move(tp)), extendsTypes(std::move(extends)),
           implements(std::move(impl)), methods(std::move(methods)),
           fields(std::move(fields)), isAbstract(abstract), isFinal(final) {}
     

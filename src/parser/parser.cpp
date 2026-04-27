@@ -187,6 +187,18 @@ Stmt::Ptr Parser::parseClass() {
         return nullptr;
     }
     
+    std::vector<std::string> typeParams;
+    if (match(TokenType::LESS)) {
+        while (!check(TokenType::GREATER) && !isAtEnd()) {
+            auto param = advance();
+            if (param.type == TokenType::IDENTIFIER) {
+                typeParams.push_back(param.lexeme);
+            }
+            if (!match(TokenType::COMMA)) break;
+        }
+        consume(TokenType::GREATER, "Expect '>' after type parameters.");
+    }
+    
     consume(TokenType::LEFT_BRACE, "Expect '{' after class name.");
     
     std::vector<std::shared_ptr<FunctionStmt>> methods;
@@ -195,7 +207,7 @@ Stmt::Ptr Parser::parseClass() {
     while (!check(TokenType::RIGHT_BRACE) && !isAtEnd()) {
         if (check(TokenType::FUNCTION_KEYWORD) || check(TokenType::CONSTRUCTOR_KEYWORD)) {
             bool isConstructor = check(TokenType::CONSTRUCTOR_KEYWORD);
-            if (isConstructor) advance(); // consume constructor keyword
+            if (isConstructor) advance();
             auto fn = std::dynamic_pointer_cast<FunctionStmt>(parseFunction(!isConstructor));
             if (isConstructor && fn) fn->name = "constructor";
             if (fn) methods.push_back(fn);
@@ -212,9 +224,8 @@ Stmt::Ptr Parser::parseClass() {
     
     std::vector<Expr::Ptr> emptyExpr;
     std::vector<std::pair<std::string, Type>> emptyType;
-    std::vector<std::string> emptyString;
     
-    return std::make_shared<ClassStmt>(name.location, name.lexeme, emptyExpr, emptyType, emptyType, emptyString, methods, fields, false, false);
+    return std::make_shared<ClassStmt>(name.location, name.lexeme, emptyExpr, typeParams, emptyType, std::vector<std::string>{}, methods, fields, false, false);
 }
 
 Stmt::Ptr Parser::parseFunction(bool expectName) {
@@ -925,14 +936,16 @@ Expr::Ptr Parser::parseCall() {
      
      while (true) {
          if (match(TokenType::LEFT_PAREN)) {
-             auto args = parseArgumentList();
-             // Check if the callee has generic type args attached
              std::vector<Type> typeArgs;
-             if (auto ident = std::dynamic_pointer_cast<IdentifierExpr>(expr)) {
-                 if (!ident->declaredType.params.empty()) {
-                     typeArgs = std::move(ident->declaredType.params);
+             if (check(TokenType::LESS)) {
+                 advance();
+                 while (!check(TokenType::GREATER) && !isAtEnd()) {
+                     typeArgs.push_back(parseType());
+                     if (!match(TokenType::COMMA)) break;
                  }
+                 consume(TokenType::GREATER, "Expect '>' after type arguments.");
              }
+             auto args = parseArgumentList();
              expr = std::make_shared<CallExpr>(previous().location, expr, previous(), std::move(args), std::move(typeArgs));
          } else if (match(TokenType::LEFT_BRACKET)) {
              bool optional = false;
