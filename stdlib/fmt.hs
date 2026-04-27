@@ -1,18 +1,20 @@
 // Format Standard Library
 
-export function print(...) {
-    // Print without newline
-    for (var i = 0; i < count(...); i++) {
+export function println(...) {
+    var i = 0;
+    while (i < count(...)) {
         writeChar(...[i]);
+        i = i + 1;
     }
+    writeChar(10);
 }
 
-export function println(...) {
-    // Print with newline
-    for (var i = 0; i < count(...); i++) {
+export function print(...) {
+    var i = 0;
+    while (i < count(...)) {
         writeChar(...[i]);
+        i = i + 1;
     }
-    writeChar(10); // newline
 }
 
 export function formatInt(n) {
