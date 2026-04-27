@@ -1687,6 +1687,8 @@ Value VM::loadModule(const std::string& moduleName) {
         std::ifstream file(resolvedPath);
         if (!file.is_open()) {
             resolvedPath = "stdlib/" + moduleName;
+        } else {
+            file.close();
         }
     }
     
