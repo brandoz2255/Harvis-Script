@@ -61,6 +61,9 @@ private:
     };
     std::vector<DeferCall> deferredCallStack;
 
+    // Module system
+    std::unordered_map<std::string, Value> modules;
+
     // Try/Catch support
     struct TryFrame {
         int tryBodyStart;    // IP where try body begins
@@ -77,6 +80,10 @@ private:
     // Recover support
     Value recoverValue;
     
+       // Module loading
+    Value loadModule(const std::string& moduleName);
+    std::unordered_map<std::string, Value>& getGlobals() { return globals; }
+    
     // Execution
     bool interpret();
     Value executeCall(int argCount);
@@ -87,6 +94,9 @@ private:
     std::shared_ptr<Upvalue> captureUpvalue(int local);
     void closeUpvalues(int localIndex);
     
+    // Goroutine synchronization
+    std::recursive_mutex vmMutex;
+
     // Native functions
     void registerNatives();
 

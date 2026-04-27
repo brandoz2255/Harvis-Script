@@ -22,6 +22,7 @@ enum class ObjectType {
     None,
     Function,
     Closure,
+    Class,
     Instance,
     Native,
     BoundMethod,
@@ -122,13 +123,28 @@ public:
     }
 };
 
+// Class object (stores methods and acts as factory for instances)
+class ClassObj : public RuntimeObject {
+public:
+    std::string name;
+    std::unordered_map<std::string, Closure*> methods;
+    Function* superClass;
+    
+    ClassObj(const std::string& n, Function* super = nullptr)
+        : RuntimeObject(ObjectType::Class, Type::object()), name(n), superClass(super) {}
+    
+    std::string toString() const override {
+        return "[Class " + name + "]";
+    }
+};
+
 // Class instance
 class Instance : public RuntimeObject {
 public:
-    Function* klass;
+    ClassObj* klass;
     std::unordered_map<std::string, Value> fields;
     
-    Instance(Function* k) : RuntimeObject(ObjectType::Instance, Type::of(k->name)), klass(k) {}
+    Instance(ClassObj* k) : RuntimeObject(ObjectType::Instance, Type::of(k->name)), klass(k) {}
     
     std::string toString() const override {
         return "[Instance " + klass->name + "]";

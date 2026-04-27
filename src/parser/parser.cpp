@@ -163,12 +163,10 @@ Stmt::Ptr Parser::parseStatement() {
     }
 }
 
-Stmt::Ptr Parser::parseExpressionStatement() {
+ Stmt::Ptr Parser::parseExpressionStatement() {
     auto expr = parseExpression();
-    if (match(TokenType::SEMICOLON)) {
-        return std::make_shared<ExpressionStmt>(previous().location, expr);
-    }
-    return nullptr;
+    match(TokenType::SEMICOLON);  // Optional semicolon
+    return std::make_shared<ExpressionStmt>(previous().location, expr);
 }
 
 Stmt::Ptr Parser::parseBlockStatement() {
@@ -1398,8 +1396,8 @@ SelectCase Parser::parseSelectCase() {
         return cs;
     }
     
-    while (!check(TokenType::CASE_KEYWORD) && !check(TokenType::DEFAULT_KEYWORD) && 
-           !check(TokenType::RIGHT_BRACE) && !isAtEnd()) {
+  while (!check(TokenType::CASE_KEYWORD) && !check(TokenType::DEFAULT_KEYWORD) && 
+            !check(TokenType::RIGHT_BRACE) && !isAtEnd()) {
         auto stmt = parseStatement();
         if (stmt) cs.body.push_back(stmt);
     }

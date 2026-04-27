@@ -363,13 +363,20 @@ void Compiler::visitLambdaExpr(LambdaExpr* expr) {
 
 void Compiler::visitNewExpr(NewExpr* expr) {
     expr->callee->accept(*this);
-    int count = 0;
+    
+    int nameIdx = chunk.findOrAddStringConstant("constructor");
+    emitByte(Opcode::OP_GET_PROPERTY);
+    emitByte(static_cast<uint8_t>(nameIdx));
+    
+    int count = static_cast<int>(expr->arguments.size());
     for (const auto& arg : expr->arguments) {
         arg->accept(*this);
-        count++;
     }
-    emitCall(count);
-    emitByte(Opcode::OP_NOP);  // Placeholder for "new"
+    
+    emitByte(Opcode::OP_CALL);
+    emitByte(static_cast<uint8_t>(count));
+    
+    emitByte(Opcode::OP_NEW_INSTANCE);
 }
 
 void Compiler::visitThisExpr(ThisExpr* expr) {
@@ -564,8 +571,51 @@ void Compiler::visitContinueStmt(ContinueStmt* stmt) {
 
 void Compiler::visitClassStmt(ClassStmt* stmt) {
     declareVariable(stmt->name);
+    
+    int nameIdx = chunk.findOrAddStringConstant(stmt->name);
     emitByte(Opcode::OP_NEW_CLASS);
-    chunk.writeString(stmt->name, 0);
+    emitByte(static_cast<uint8_t>(nameIdx));
+    
+    beginScope();
+    
+    for (const auto& method : stmt->methods) {
+        Compiler methodCompiler;
+        methodCompiler.beginScope();
+        
+        for (const auto& param : method->parameters) {
+            methodCompiler.declareVariable(param.first);
+        }
+        
+        for (const auto& bodyStmt : method->body) {
+            bodyStmt->accept(methodCompiler);
+        }
+        methodCompiler.endScope();
+        
+        Function* func = new Function(method->name, methodCompiler.chunk, 
+                                      static_cast<int>(method->parameters.size()));
+        func->isClassMethod = true;
+        
+        int funcIndex = static_cast<int>(chunk.constants.size());
+        chunk.constants.push_back(Value(func));
+        
+        emitByte(Opcode::OP_CLOSURE);
+        emitByte(static_cast<uint8_t>(funcIndex));
+        emitByte(0);
+        
+        int methodNameIdx = chunk.findOrAddStringConstant(method->name);
+        emitByte(Opcode::OP_METHOD);
+        emitByte(static_cast<uint8_t>(methodNameIdx));
+    }
+    
+    endScope();
+    
+    int slot = resolveLocal(stmt->name, false);
+    if (slot >= 0) {
+        emitSetLocal(slot);
+    } else {
+        emitByte(Opcode::OP_SET_GLOBAL);
+        emitByte(static_cast<uint8_t>(nameIdx));
+    }
 }
 
 void Compiler::visitVarDeclStmt(VarDeclStmt* stmt) {
@@ -594,7 +644,24 @@ void Compiler::visitConstDeclStmt(ConstDeclStmt* stmt) {
     defineVariable(stmt->name);
 }
 
-void Compiler::visitImportStmt(ImportStmt* stmt) {
+  void Compiler::visitImportStmt(ImportStmt* stmt) {
+    // Generate variable name from module filename if none specified
+    bool shorthandImport = stmt->defaultImport.empty() && 
+                           stmt->namedImports.empty() && 
+                           stmt->namespaceImport.empty();
+    std::string varName = stmt->defaultImport;
+    if (shorthandImport) {
+        size_t lastSlash = stmt->moduleName.find_last_of("/\\");
+        size_t start = (lastSlash != std::string::npos) ? lastSlash + 1 : 0;
+        size_t dotPos = stmt->moduleName.find('.', start);
+        std::string basename = stmt->moduleName.substr(start, dotPos - start);
+        // Replace non-alphanumeric chars with underscore
+        for (char& c : basename) {
+            if (!std::isalnum(c)) c = '_';
+        }
+        varName = basename;
+    }
+    
     // Push module name as string constant
     int modIdx = chunk.findOrAddStringConstant(stmt->moduleName);
     emitByte(Opcode::OP_CONST_STRING);
@@ -626,6 +693,13 @@ void Compiler::visitImportStmt(ImportStmt* stmt) {
             emitByte(Opcode::OP_DUP);  // Duplicate for namespace import
         }
         int varIdx = chunk.findOrAddStringConstant(stmt->namespaceImport);
+        emitByte(Opcode::OP_SET_GLOBAL);
+        emitByte(static_cast<uint8_t>(varIdx));
+    }
+    
+    // For shorthand import, set the auto-generated variable
+    if (shorthandImport && !varName.empty()) {
+        int varIdx = chunk.findOrAddStringConstant(varName);
         emitByte(Opcode::OP_SET_GLOBAL);
         emitByte(static_cast<uint8_t>(varIdx));
     }
@@ -864,39 +938,59 @@ void Compiler::visitGoStmt(GoStmt* stmt) {
 }
 
 void Compiler::visitSelectStmt(SelectStmt* stmt) {
-    int caseCount = static_cast<int>(stmt->cases.size());
-    
-    for (int i = 0; i < caseCount; i++) {
-        auto& caseStmt = stmt->cases[i];
-        
-        if (caseStmt.isDefault) {
-            emitByte(Opcode::OP_SELECT_DEFAULT);
-            for (const auto& bodyStmt : caseStmt.body) {
-                bodyStmt->accept(*this);
-            }
-            emitByte(Opcode::OP_SELECT_CASE_END);
+    // Compile each case body as a closure for VM to pick
+    struct CaseInfo {
+        bool isSend;
+        bool isDefault;
+    };
+    std::vector<CaseInfo> infos;
+
+    for (int i = 0; i < static_cast<int>(stmt->cases.size()); i++) {
+        auto& cs = stmt->cases[i];
+        if (cs.isDefault) {
+            Compiler bc; bc.beginScope();
+            for (const auto& b : cs.body) b->accept(bc);
+            bc.emitByte(Opcode::OP_CONST_UNDEFINED); bc.emitReturn(); bc.endScope();
+            Function* func = new Function("sel_def", bc.chunk, 0);
+            int fi = static_cast<int>(chunk.constants.size());
+            chunk.constants.push_back(Value(func));
+            emitByte(Opcode::OP_CLOSURE);
+            emitByte(static_cast<uint8_t>(fi));
+            emitByte(0);
+            emitByte(Opcode::OP_CONST_NULL);
+            emitByte(Opcode::OP_CONST_FALSE);
+            emitByte(Opcode::OP_CONST_NULL);
+            infos.push_back({false, true});
         } else {
-            emitByte(Opcode::OP_SELECT_CASE);
-            emitByte(static_cast<uint8_t>(caseStmt.isSend ? 1 : 0));
-            
-            if (caseStmt.isSend) {
-                caseStmt.channel->accept(*this);
-                caseStmt.value->accept(*this);
-            } else {
-                caseStmt.channel->accept(*this);
-                if (caseStmt.value) {
-                    emitByte(Opcode::OP_CONST_UNDEFINED);
+            Compiler bc; bc.beginScope();
+            for (const auto& b : cs.body) b->accept(bc);
+            bc.emitByte(Opcode::OP_CONST_UNDEFINED); bc.emitReturn(); bc.endScope();
+            Function* func = new Function("sel_case", bc.chunk, 0);
+            int fi = static_cast<int>(chunk.constants.size());
+            chunk.constants.push_back(Value(func));
+            emitByte(Opcode::OP_CLOSURE);
+            emitByte(static_cast<uint8_t>(fi));
+            emitByte(0);
+            // For receive case, cs.channel is a ReceiveExpr; extract the actual channel
+            if (!cs.isSend) {
+                auto* recvExpr = dynamic_cast<ReceiveExpr*>(cs.channel.get());
+                if (recvExpr) {
+                    recvExpr->channel->accept(*this);
+                } else {
+                    cs.channel->accept(*this);
                 }
+            } else {
+                cs.channel->accept(*this);
             }
-            
-            for (const auto& bodyStmt : caseStmt.body) {
-                bodyStmt->accept(*this);
-            }
-            emitByte(Opcode::OP_SELECT_CASE_END);
+            emitByte(cs.isSend ? Opcode::OP_CONST_TRUE : Opcode::OP_CONST_FALSE);
+            if (cs.isSend) cs.value->accept(*this);
+            else emitByte(Opcode::OP_CONST_NULL);
+            infos.push_back({cs.isSend, false});
         }
     }
-    
-    emitBytes(Opcode::OP_SELECT, static_cast<uint8_t>(caseCount));
+
+    emitByte(Opcode::OP_SELECT);
+    emitByte(static_cast<uint8_t>(infos.size()));
 }
 
 void Compiler::pushTypeParams(const std::vector<std::string>& params) {
@@ -1032,7 +1126,7 @@ void Compiler::visitCallExpr(CallExpr* expr) {
 }
 
 void Compiler::visitFunctionStmt(FunctionStmt* stmt) {
-    declareVariable(stmt->name);
+    // Don't declare as local - functions are globals
     
     Compiler bodyCompiler;
     bodyCompiler.beginScope();
@@ -1060,13 +1154,23 @@ void Compiler::visitFunctionStmt(FunctionStmt* stmt) {
     emitByte(static_cast<uint8_t>(funcIndex));
     emitByte(0);
     
-    int slot = resolveLocal(stmt->name, false);
+   int slot = resolveLocal(stmt->name, false);
     if (slot >= 0) {
-        emitSetLocal(slot);
+        int depth = resolveLocalDepth(stmt->name);
+        if (depth == 0) {
+            // Global scope - use OP_SET_GLOBAL
+            int nameIdx = chunk.findOrAddStringConstant(stmt->name);
+            emitByte(Opcode::OP_SET_GLOBAL);
+            emitByte(static_cast<uint8_t>(nameIdx));
+        } else {
+            // Local scope - use OP_SET_LOCAL
+            emitSetLocal(slot);
+        }
     } else {
+        int nameIdx = chunk.findOrAddStringConstant(stmt->name);
         emitByte(Opcode::OP_SET_GLOBAL);
-        chunk.writeString(stmt->name, 0);
-   }
+        emitByte(static_cast<uint8_t>(nameIdx));
+    }
 }
 
 void Compiler::visitTypeAssertExpr(TypeAssertExpr* expr) {

@@ -28,9 +28,9 @@ Value::Value(const std::string& s)
 Value::Value(const char* s)
     : kind(Kind::String), payload(new std::string(s)), type(Type::string()) {}
 
-Value::Value(RuntimeObject* obj, Type t)
+ Value::Value(RuntimeObject* obj, Type t)
     : kind(Kind::Object), payload(obj), type(t) {
-    (void)obj;
+    if (obj) obj->retain();
 }
 
 Value::Value(Value&& other) noexcept 

@@ -2,6 +2,11 @@
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include "../lexer/lexer.h"
+#include "../parser/parser.h"
+#include "../compiler/compiler.h"
 
 namespace hs {
 
@@ -127,13 +132,15 @@ void VM::reportError(const std::string& message) {
     fprintf(stderr, "Error: %s\n", message.c_str());
 }
 
-bool VM::interpret() {
+  bool VM::interpret() {
     error = false;
     
     interpret_loop:
     while (!error) {
+        std::unique_lock<std::recursive_mutex> lock(vmMutex);
         if (panicActive) {
             panicActive = false;
+            lock.unlock();
             continue;
         }
         
@@ -222,12 +229,11 @@ case Opcode::OP_GET_GLOBAL: {
              }
             
        case Opcode::OP_SET_GLOBAL: {
-                 Value value = pop();
-                 std::string name = chunk->constants[chunk->code[offset++]].toString();
-                 callStack.top().ip = offset;
-                 setGlobal(name, value);
-                 fprintf(stderr, "DEBUG SET_GLOBAL: name=%s, value=%s\n", name.c_str(), value.toString().c_str());
-                 break;
+      Value value = pop();
+                std::string name = chunk->constants[chunk->code[offset++]].toString();
+                callStack.top().ip = offset;
+                setGlobal(name, value);
+                break;
              }
             
             case Opcode::OP_ADD: {
@@ -478,73 +484,98 @@ case Opcode::OP_GET_GLOBAL: {
                  break;
              }
             
-            case Opcode::OP_CALL: {
-                int argCount = chunk->code[callStack.top().ip++];
-                Value callee = peek(argCount);
-                
-               if (callee.isObject() && callee.asObject()) {
-                      if (callee.asObject()->type == ObjectType::Function) {
-                          auto* func = reinterpret_cast<Function*>(callee.asObject());
+case Opcode::OP_CALL: {
+                 int argCount = chunk->code[callStack.top().ip++];
+                 Value callee = peek(argCount);
+                 
+                if (callee.isObject() && callee.asObject()) {
+                       if (callee.asObject()->type == ObjectType::Function) {
+                           auto* func = reinterpret_cast<Function*>(callee.asObject());
+                           
+                           // Set up call frame
+                           CallFrame frame;
+                           frame.function = func;
+                           frame.chunk = &func->chunk;
+                 frame.ip = 0;
+                  frame.stackStart = static_cast<int>(stack.size()) - argCount;
+                  
+                  // Initialize locals with function parameters
+                  int arity = func->arity;
+                  for (int i = 0; i < arity && i < argCount; i++) {
+                      frame.locals.push_back(stack[frame.stackStart + i]);
+                  }
+                  while (frame.locals.size() < static_cast<size_t>(arity)) {
+                      frame.locals.push_back(Value());
+                  }
+                  
+                  callStack.push(frame);
+                  break;
+              } else if (callee.asObject()->type == ObjectType::Closure) {
+                          auto* closure = reinterpret_cast<Closure*>(callee.asObject());
                           
-                          // Set up call frame
                           CallFrame frame;
-                          frame.function = func;
-                          frame.chunk = &func->chunk;
-                frame.ip = 0;
-                 frame.stackStart = static_cast<int>(stack.size()) - argCount;
-                 
-                 // Initialize locals with function parameters
-                 int arity = func->arity;
-                 for (int i = 0; i < arity && i < argCount; i++) {
-                     frame.locals.push_back(stack[frame.stackStart + i]);
-                 }
-                 while (frame.locals.size() < static_cast<size_t>(arity)) {
-                     frame.locals.push_back(Value());
-                 }
-                 
-                 callStack.push(frame);
+                          frame.function = closure->function;
+                          frame.chunk = &closure->function->chunk;
+                          frame.ip = 0;
+                          frame.stackStart = static_cast<int>(stack.size()) - argCount;
+                          
+                          // Initialize locals with function parameters
+                          int arity = closure->function->arity;
+                          for (int i = 0; i < arity && i < argCount; i++) {
+                              frame.locals.push_back(stack[frame.stackStart + i]);
+                          }
+                          while (frame.locals.size() < static_cast<size_t>(arity)) {
+                              frame.locals.push_back(Value());
+                          }
+                          
+                          callStack.push(frame);
+                          break;
+                     } else if (callee.asObject()->type == ObjectType::BoundMethod) {
+                          auto* bound = reinterpret_cast<BoundMethod*>(callee.asObject());
+                          Instance* instance = bound->instance;
+                          
+                          CallFrame frame;
+                          frame.function = bound->method->function;
+                          frame.chunk = &bound->method->function->chunk;
+                          frame.ip = 0;
+                          frame.stackStart = static_cast<int>(stack.size()) - argCount;
+                          
+                          // Initialize locals with 'this' as first param and function parameters
+                          // Push instance as implicit first argument (this)
+                          int arity = bound->method->function->arity;
+                          // slot 0 = this
+                          frame.locals.push_back(Value(instance));
+                          // Remaining slots from stack
+                          for (int i = 1; i < arity && i < argCount; i++) {
+                              frame.locals.push_back(stack[frame.stackStart + i]);
+                          }
+                          while (frame.locals.size() < static_cast<size_t>(arity)) {
+                              frame.locals.push_back(Value());
+                          }
+                          
+                          callStack.push(frame);
+                          break;
+                     } else if (callee.asObject()->type == ObjectType::Native) {
+                          auto* native = reinterpret_cast<NativeFunction*>(callee.asObject());
+                          // Call native function
+                          Value* args = &stack[stack.size() - argCount];
+                          Value result = native->function(args, argCount);
+                          
+                          // Pop arguments and function
+                          for (int i = 0; i <= argCount; i++) {
+                              pop();
+                          }
+                          push(result);
+                      } else {
+                          reportError("Can only call functions.");
+                          return false;
+                      }
+                  } else {
+                      reportError("Can only call functions.");
+                      return false;
+                  }
                  break;
-             } else if (callee.asObject()->type == ObjectType::Closure) {
-                         auto* closure = reinterpret_cast<Closure*>(callee.asObject());
-                         
-                         CallFrame frame;
-                         frame.function = closure->function;
-                         frame.chunk = &closure->function->chunk;
-                         frame.ip = 0;
-                         frame.stackStart = static_cast<int>(stack.size()) - argCount;
-                         
-                         // Initialize locals with function parameters
-                         int arity = closure->function->arity;
-                         for (int i = 0; i < arity && i < argCount; i++) {
-                             frame.locals.push_back(stack[frame.stackStart + i]);
-                         }
-                         while (frame.locals.size() < static_cast<size_t>(arity)) {
-                             frame.locals.push_back(Value());
-                         }
-                         
-                         callStack.push(frame);
-                         break;
-                    } else if (callee.asObject()->type == ObjectType::Native) {
-                         auto* native = reinterpret_cast<NativeFunction*>(callee.asObject());
-                         // Call native function
-                         Value* args = &stack[stack.size() - argCount];
-                         Value result = native->function(args, argCount);
-                         
-                         // Pop arguments and function
-                         for (int i = 0; i <= argCount; i++) {
-                             pop();
-                         }
-                         push(result);
-                     } else {
-                         reportError("Can only call functions.");
-                         return false;
-                     }
-                 } else {
-                     reportError("Can only call functions.");
-                     return false;
-                 }
-                break;
-            }
+             }
             
             case Opcode::OP_RETURN: {
                 Value result;
@@ -553,22 +584,22 @@ case Opcode::OP_GET_GLOBAL: {
                 }
                 int returnPos = callStack.top().stackStart - 1;
                 int argCount = callStack.top().function->arity;
-                
+
                 // Pop the frame
                 callStack.pop();
-                
+
                 if (callStack.empty()) {
                     lastValue = result;
                     return true;
                 }
-                
+
                 // Pop arguments and callee
                 for (int i = 0; i < argCount; i++) {
                     pop();
                 }
                 pop();  // Pop callee
                 push(result);
-                
+
                 // Move back to caller's function
                 function = callStack.top().function;
                 chunk = &function->chunk;
@@ -603,24 +634,46 @@ case Opcode::OP_GET_GLOBAL: {
                 break;
             }
             
-            case Opcode::OP_GET_PROPERTY: {
-                std::string name = pop().toString();
-                Value obj = pop();
-                
-                if (obj.isObject() && obj.asObject() && obj.asObject()->type == ObjectType::Map) {
-                    auto* mapObj = reinterpret_cast<MapObj*>(obj.asObject());
-                    auto it = mapObj->entries.find(name);
-                    if (it != mapObj->entries.end()) {
-                        push(it->second);
-                    } else {
-                        push(Value());  // undefined
-                    }
-                } else {
-                    reportError("Object has no property: " + name);
-                    return false;
-                }
-                break;
-            }
+case Opcode::OP_GET_PROPERTY: {
+                 std::string name = pop().toString();
+                 Value obj = pop();
+                 
+                 if (obj.isObject() && obj.asObject()) {
+                     if (obj.asObject()->type == ObjectType::Map) {
+                         auto* mapObj = reinterpret_cast<MapObj*>(obj.asObject());
+                         auto it = mapObj->entries.find(name);
+                         if (it != mapObj->entries.end()) {
+                             push(it->second);
+                         } else {
+                             push(Value());  // undefined
+                         }
+                     } else if (obj.asObject()->type == ObjectType::Instance) {
+                         auto* instance = reinterpret_cast<Instance*>(obj.asObject());
+                         
+                         // First check fields
+                         auto fieldIt = instance->fields.find(name);
+                         if (fieldIt != instance->fields.end()) {
+                             push(fieldIt->second);
+                         } else {
+                             // Check methods in class
+                             auto methodIt = instance->klass->methods.find(name);
+                             if (methodIt != instance->klass->methods.end()) {
+                                 auto* bound = new BoundMethod(instance, methodIt->second);
+                                 push(Value(bound));
+                             } else {
+                                 push(Value());  // undefined
+                             }
+                         }
+                     } else {
+                         reportError("Object has no property: " + name);
+                         return false;
+                     }
+                 } else {
+                     reportError("Cannot get property of non-object: " + name);
+                     return false;
+                 }
+                 break;
+             }
             
             case Opcode::OP_SET_PROPERTY: {
                 Value value = pop();
@@ -679,15 +732,42 @@ case Opcode::OP_GET_GLOBAL: {
             
             case Opcode::OP_NEW_CLASS: {
                 std::string name = chunk->constants[chunk->code[callStack.top().ip++]].toString();
-                auto* klass = new Function(name, Chunk(), 0, false, true);
+                auto* klass = new ClassObj(name);
                 push(Value(klass));
+                break;
+            }
+            
+            case Opcode::OP_NEW_INSTANCE: {
+                // Pop class object, create new instance
+                Value classVal = pop();
+                if (classVal.isObject() && classVal.asObject() && classVal.asObject()->type == ObjectType::Class) {
+                    auto* klass = reinterpret_cast<ClassObj*>(classVal.asObject());
+                    auto* instance = new Instance(klass);
+                    push(Value(instance));
+                } else {
+                    reportError("Cannot create instance from non-class.");
+                    return false;
+                }
                 break;
             }
             
             case Opcode::OP_METHOD: {
                 std::string name = chunk->constants[chunk->code[callStack.top().ip++]].toString();
-                // Method handling would go here
-                pop();  // For now, just pop the method
+                Value methodVal = pop();
+                
+                // Pop the class (should be on stack below the method)
+                if (stack.size() >= 2) {
+                    Value classVal = stack[stack.size() - 2];
+                    if (classVal.isObject() && classVal.asObject() && classVal.asObject()->type == ObjectType::Class) {
+                        auto* klass = reinterpret_cast<ClassObj*>(classVal.asObject());
+                        if (methodVal.isObject() && methodVal.asObject() && methodVal.asObject()->type == ObjectType::Closure) {
+                            auto* closure = reinterpret_cast<Closure*>(methodVal.asObject());
+                            klass->methods[name] = closure;
+                            closure->retain();  // Keep method alive
+                        }
+                    }
+                }
+                // Remove class from stack, leave method on stack (for assignment)
                 break;
             }
             
@@ -937,19 +1017,28 @@ case Opcode::OP_GET_GLOBAL: {
                 break;
             }
             
-            case Opcode::OP_IMPORT: {
-                // Stack: moduleName -> module (or null if not found)
+           case Opcode::OP_IMPORT: {
+                // Stack: moduleName -> module
                 std::string moduleName = pop().toString();
-                // For now, push null as placeholder (no file I/O yet)
-                push(Value());
+                Value module = loadModule(moduleName);
+                push(module);
                 break;
             }
             
             case Opcode::OP_EXPORT: {
-                // Pop name from constant table, mark as exported
-                // For now, just skip the name byte
+                // Mark the top of stack as exported
+                // Get the current module (top of globals if it's a Map)
+                if (stack.empty()) break;
                 uint8_t nameIdx = chunk->code[callStack.top().ip++];
-                (void)nameIdx;
+                std::string exportName = chunk->constants[nameIdx].toString();
+                
+                // Find the current module - check globals for module objects
+                for (auto& [name, mod] : modules) {
+                    if (mod.isObject() && mod.asObject() && mod.asObject()->type == ObjectType::Map) {
+                        auto* mapObj = reinterpret_cast<MapObj*>(mod.asObject());
+                        mapObj->entries[exportName] = stack.back();
+                    }
+                }
                 break;
             }
 
@@ -1371,35 +1460,77 @@ push(value);
             }
             
             case Opcode::OP_SELECT_CASE: {
-                // Select case is handled by the select handler
-                // This opcode marks the beginning of a case's bytecode
                 break;
             }
-            
+
             case Opcode::OP_SELECT_DEFAULT: {
-                // Select default is handled by the select handler
                 break;
             }
-            
+
             case Opcode::OP_SELECT_CASE_END: {
-                // End of select case body
                 break;
             }
-            
-            case Opcode::OP_SELECT: {
+
+        case Opcode::OP_SELECT: {
                 int caseCount = chunk->code[callStack.top().ip++];
-                callStack.top().ip++;
-                
-                // Pop all case data from stack (already compiled)
-                // Execute first ready channel case, or default
-                
-                // For now, execute the first non-default case that is ready
-                // Simple implementation: just execute first case
-                if (caseCount > 0) {
-                    // Execute first case body (bytecode already emitted)
-                    // We need to re-interpret the case bodies
-                    // For simplicity, just pop and break
-                    break;
+
+                struct SelectCase {
+                    Closure* body;
+                    ChannelObj* channel;
+                    bool isSend;
+                    Value sendValue;
+                    bool isDefault;
+                };
+
+                std::vector<SelectCase> cases(caseCount);
+                for (int i = caseCount - 1; i >= 0; i--) {
+                    cases[i].sendValue = pop();
+                    cases[i].isSend = pop().toBool();
+                    Value chVal = pop();
+                    cases[i].isDefault = !chVal.isObject() || !chVal.asObject() || chVal.asObject()->type != ObjectType::Channel;
+                    cases[i].channel = cases[i].isDefault ? nullptr : reinterpret_cast<ChannelObj*>(chVal.asObject());
+                    Value cv = pop();
+                    cases[i].body = cv.isObject() && cv.asObject() && cv.asObject()->type == ObjectType::Closure
+                        ? reinterpret_cast<Closure*>(cv.asObject()) : nullptr;
+                }
+
+                // Check ready channels
+                std::vector<int> ready;
+                for (int i = 0; i < caseCount; i++) {
+                    auto& sc = cases[i];
+                    if (sc.isDefault || !sc.channel) continue;
+                    std::lock_guard<std::mutex> lock(sc.channel->mtx);
+                    if (sc.isSend) {
+                        if (sc.channel->closed || static_cast<int>(sc.channel->queue.size()) < sc.channel->capacity)
+                            ready.push_back(i);
+                    } else {
+                        if (!sc.channel->queue.empty() || sc.channel->closed)
+                            ready.push_back(i);
+                    }
+                }
+
+                int selected = -1;
+                if (!ready.empty()) selected = ready[rand() % ready.size()];
+                else {
+                    for (int i = 0; i < caseCount; i++) {
+                        if (cases[i].isDefault) { selected = i; break; }
+                    }
+                }
+
+                if (selected >= 0 && cases[selected].body) {
+                    auto& sc = cases[selected];
+                    if (!sc.isDefault && sc.channel) {
+                        if (sc.isSend) sc.channel->send(sc.sendValue);
+                        else sc.channel->receive();
+                    }
+                    // Execute closure body
+                    push(Value(sc.body));
+                    CallFrame df;
+                    df.function = sc.body->function;
+                    df.chunk = &sc.body->function->chunk;
+                    df.ip = 0;
+                    df.stackStart = static_cast<int>(stack.size()) - 1;
+                    callStack.push(df);
                 }
                 break;
             }
@@ -1466,7 +1597,7 @@ push(value);
                 break;
             }
             
-            case Opcode::OP_GO: {
+           case Opcode::OP_GO: {
                 int argCount = chunk->code[callStack.top().ip++];
                 callStack.top().ip++;
                 
@@ -1481,334 +1612,19 @@ push(value);
                         frame.chunk = &closure->function->chunk;
                         frame.ip = 0;
                         frame.stackStart = static_cast<int>(stack.size()) - argCount - 1;
-                        
-                        std::thread t([this, frame]() mutable {
+                        std::thread t([this, frame]() {
+                            std::unique_lock<std::recursive_mutex> lock(vmMutex);
                             callStack.push(frame);
-                            while (true) {
-                                Function* fn = frame.function;
-                                Chunk* ch = &fn->chunk;
-                                if (frame.ip >= static_cast<int>(ch->code.size())) {
-                                    break;
-                                }
-                                Opcode op = static_cast<Opcode>(ch->code[frame.ip++]);
-                                frame.ip = frame.ip;
-                                
-                                switch (op) {
-                                    case Opcode::OP_CONST_NULL:
-                                        push(Value(nullptr));
-                                        break;
-                                    case Opcode::OP_CONST_TRUE:
-                                        push(true);
-                                        break;
-                                    case Opcode::OP_CONST_FALSE:
-                                        push(false);
-                                        break;
-                                    case Opcode::OP_CONST_NUMBER: {
-                                        double val = ch->constants[ch->code[frame.ip++]].toNumber();
-                                        push(val);
-                                        break;
-                                    }
-                                    case Opcode::OP_CONST_STRING: {
-                                        std::string val = ch->constants[ch->code[frame.ip++]].toString();
-                                        push(val);
-                                        break;
-                                    }
-                                    case Opcode::OP_CONST_UNDEFINED:
-                                        push(Value());
-                                        break;
-                                    case Opcode::OP_GET_LOCAL: {
-                                        int slot = ch->code[frame.ip++];
-                                        frame.ip++;
-                                        int stackPos = frame.stackStart + slot;
-                                        if (stackPos >= 0 && stackPos < static_cast<int>(stack.size())) {
-                                            push(stack[stackPos]);
-                                        }
-                                        break;
-                                    }
-                                    case Opcode::OP_SET_LOCAL: {
-                                        int slot = ch->code[frame.ip++];
-                                        frame.ip++;
-                                        Value val = pop();
-                                        int stackPos = frame.stackStart + slot;
-                                        if (stackPos >= 0) {
-                                            while (static_cast<int>(stack.size()) < stackPos) {
-                                                stack.push_back(Value());
-                                            }
-                                            if (stackPos < static_cast<int>(stack.size())) {
-                                                stack[stackPos] = val;
-                                            }
-                                        }
-                                        break;
-                                    }
-                                    case Opcode::OP_GET_GLOBAL: {
-                                        std::string name = ch->constants[ch->code[frame.ip++]].toString();
-                                        frame.ip++;
-                                        push(getGlobal(name));
-                                        break;
-                                    }
-                                    case Opcode::OP_SET_GLOBAL: {
-                                        Value val = pop();
-                                        std::string name = ch->constants[ch->code[frame.ip++]].toString();
-                                        frame.ip++;
-                                        setGlobal(name, val);
-                                        break;
-                                    }
-                                    case Opcode::OP_ADD: {
-                                        Value b = pop(); Value a = pop();
-                                        if (a.isNumber() && b.isNumber()) push(a.toNumber() + b.toNumber());
-                                        else if (a.isString() && b.isString()) push(a.toString() + b.toString());
-                                        else { reportError("Operands must be two numbers or two strings."); return; }
-                                        break;
-                                    }
-                                    case Opcode::OP_SUBTRACT: {
-                                        Value b = pop(); Value a = pop();
-                                        if (a.isNumber() && b.isNumber()) push(a.toNumber() - b.toNumber());
-                                        else { reportError("Operands must be numbers."); return; }
-                                        break;
-                                    }
-                                    case Opcode::OP_MULTIPLY: {
-                                        Value b = pop(); Value a = pop();
-                                        if (a.isNumber() && b.isNumber()) push(a.toNumber() * b.toNumber());
-                                        else { reportError("Operands must be numbers."); return; }
-                                        break;
-                                    }
-                                    case Opcode::OP_DIVIDE: {
-                                        Value b = pop(); Value a = pop();
-                                        if (a.isNumber() && b.isNumber()) push(a.toNumber() / b.toNumber());
-                                        else { reportError("Operands must be numbers."); return; }
-                                        break;
-                                    }
-                                    case Opcode::OP_MODULO: {
-                                        Value b = pop(); Value a = pop();
-                                        if (a.isNumber() && b.isNumber()) push(fmod(a.toNumber(), b.toNumber()));
-                                        else { reportError("Operands must be numbers."); return; }
-                                        break;
-                                    }
-                                    case Opcode::OP_NEGATE: {
-                                        Value a = pop();
-                                        if (a.isNumber()) push(-a.toNumber());
-                                        else { reportError("Operand must be a number."); return; }
-                                        break;
-                                    }
-                                    case Opcode::OP_EQUAL: { push(pop() == pop()); break; }
-                                    case Opcode::OP_NOT_EQUAL: { push(pop() != pop()); break; }
-                                    case Opcode::OP_LESS: {
-                                        Value b = pop(); Value a = pop();
-                                        if (a.isNumber() && b.isNumber()) push(a.toNumber() < b.toNumber());
-                                        else { reportError("Operands must be numbers."); return; }
-                                        break;
-                                    }
-                                    case Opcode::OP_LESS_EQUAL: {
-                                        Value b = pop(); Value a = pop();
-                                        if (a.isNumber() && b.isNumber()) push(a.toNumber() <= b.toNumber());
-                                        else { reportError("Operands must be numbers."); return; }
-                                        break;
-                                    }
-                                    case Opcode::OP_GREATER: {
-                                        Value b = pop(); Value a = pop();
-                                        if (a.isNumber() && b.isNumber()) push(a.toNumber() > b.toNumber());
-                                        else { reportError("Operands must be numbers."); return; }
-                                        break;
-                                    }
-                                    case Opcode::OP_GREATER_EQUAL: {
-                                        Value b = pop(); Value a = pop();
-                                        if (a.isNumber() && b.isNumber()) push(a.toNumber() >= b.toNumber());
-                                        else { reportError("Operands must be numbers."); return; }
-                                        break;
-                                    }
-                                    case Opcode::OP_NOT: { push(!pop().toBool()); break; }
-                                    case Opcode::OP_AND: { push(pop().toBool() && pop().toBool()); break; }
-                                    case Opcode::OP_OR: { push(pop().toBool() || pop().toBool()); break; }
-                                    case Opcode::OP_POP: pop(); break;
-                                    case Opcode::OP_JUMP: {
-                                        int offset = ch->code[frame.ip++];
-                                        frame.ip += offset;
-                                        break;
-                                    }
-                                    case Opcode::OP_JUMP_IF_FALSE: {
-                                        int offset = ch->code[frame.ip++];
-                                        Value cond = pop();
-                                        if (!cond.toBool()) frame.ip += offset;
-                                        break;
-                                    }
-                                    case Opcode::OP_JUMP_IF_TRUE: {
-                                        int offset = ch->code[frame.ip++];
-                                        Value cond = pop();
-                                        if (cond.toBool()) frame.ip += offset;
-                                        break;
-                                    }
-                                    case Opcode::OP_LOOP: {
-                                        int offset = ch->code[frame.ip++];
-                                        frame.ip -= offset;
-                                        break;
-                                    }
-                                    case Opcode::OP_CALL: {
-                                        int callArgCount = ch->code[frame.ip++];
-                                        frame.ip++;
-                                        Value calleeVal = peek(callArgCount);
-                                        if (calleeVal.isObject() && calleeVal.asObject()) {
-                                            auto* calleeObj = calleeVal.asObject();
-                                            if (calleeObj->type == ObjectType::Closure) {
-                                                auto* closure = reinterpret_cast<Closure*>(calleeObj);
-                                                CallFrame callFrame;
-                                                callFrame.function = closure->function;
-                                                callFrame.chunk = &closure->function->chunk;
-                                                callFrame.ip = 0;
-                                                callFrame.stackStart = static_cast<int>(stack.size()) - callArgCount - 1;
-                                                callStack.push(callFrame);
-                                            } else if (calleeObj->type == ObjectType::Native) {
-                                                auto* native = reinterpret_cast<NativeFunction*>(calleeObj);
-                                                Value* args = &stack[stack.size() - callArgCount];
-                                                Value result = native->function(args, callArgCount);
-                                                for (int i = 0; i <= callArgCount; i++) pop();
-                                                push(result);
-                                            }
-                                        }
-                                        break;
-                                    }
-                                    case Opcode::OP_RETURN: {
-                                        Value result;
-                                        if (!stack.empty()) result = pop();
-                                        break;
-                                    }
-                                    case Opcode::OP_CLOSURE: {
-                                        int funcIndex = ch->code[frame.ip++];
-                                        int upvalueCount = ch->code[frame.ip++];
-                                        frame.ip += upvalueCount;
-                                        Value funcVal = ch->constants[funcIndex];
-                                        Function* func = static_cast<Function*>(funcVal.asObject());
-                                        std::vector<std::shared_ptr<Upvalue>> closureUpvalues;
-                                        for (int j = 0; j < upvalueCount; j++) {
-                                            closureUpvalues.push_back(upvalues[0]);
-                                        }
-                                        auto* closure = new Closure(func, std::move(closureUpvalues));
-                                        push(Value(closure));
-                                        break;
-                                    }
-                                    case Opcode::OP_NEW_ARRAY: {
-                                        int count = ch->code[frame.ip++];
-                                        frame.ip++;
-                                        auto* arr = new ArrayObj();
-                                        for (int i = count - 1; i >= 0; i--) {
-                                            arr->elements.insert(arr->elements.begin(), pop());
-                                        }
-                                        push(Value(arr));
-                                        break;
-                                    }
-                                    case Opcode::OP_NEW_OBJECT: {
-                                        int count = ch->code[frame.ip++];
-                                        frame.ip++;
-                                        auto* obj = new MapObj();
-                                        for (int i = 0; i < count; i++) {
-                                            Value val = pop();
-                                            std::string key = pop().toString();
-                                            obj->entries[key] = val;
-                                        }
-                                        push(Value(obj));
-                                        break;
-                                    }
-                                    case Opcode::OP_GET_FIELD: {
-                                        int nameIdx = ch->code[frame.ip++];
-                                        frame.ip++;
-                                        std::string fieldName = ch->constants[nameIdx].toString();
-                                        Value objVal = pop();
-                                        if (objVal.isObject() && objVal.asObject() && objVal.asObject()->type == ObjectType::Map) {
-                                            auto* mapObj = reinterpret_cast<MapObj*>(objVal.asObject());
-                                            auto it = mapObj->entries.find(fieldName);
-                                            if (it != mapObj->entries.end()) push(it->second);
-                                            else push(Value());
-                                        }
-                                        break;
-                                    }
-                                    case Opcode::OP_SET_FIELD: {
-                                        int nameIdx = ch->code[frame.ip++];
-                                        frame.ip++;
-                                        std::string fieldName = ch->constants[nameIdx].toString();
-                                        Value val = pop();
-                                        Value objVal = pop();
-                                        if (objVal.isObject() && objVal.asObject() && objVal.asObject()->type == ObjectType::Map) {
-                                            auto* mapObj = reinterpret_cast<MapObj*>(objVal.asObject());
-                                            mapObj->entries[fieldName] = val;
-                                        }
-                                        break;
-                                    }
-                                    case Opcode::OP_GET_INDEX: {
-                                        Value idxVal = pop(); Value arrVal = pop();
-                                        if (arrVal.isObject() && arrVal.asObject() && arrVal.asObject()->type == ObjectType::Array) {
-                                            auto* arr = reinterpret_cast<ArrayObj*>(arrVal.asObject());
-                                            int idx = static_cast<int>(idxVal.toNumber());
-                                            if (idx >= 0 && idx < arr->length()) push(arr->at(idx));
-                                            else push(Value());
-                                        }
-                                        break;
-                                    }
-                                    case Opcode::OP_SET_INDEX: {
-                                        Value val = pop(); Value idxVal = pop(); Value arrVal = pop();
-                                        if (arrVal.isObject() && arrVal.asObject() && arrVal.asObject()->type == ObjectType::Array) {
-                                            auto* arr = reinterpret_cast<ArrayObj*>(arrVal.asObject());
-                                            int idx = static_cast<int>(idxVal.toNumber());
-                                            if (idx >= 0 && idx < arr->length()) arr->at(idx) = val;
-                                        }
-                                        break;
-                                    }
-                                    case Opcode::OP_DEFER: {
-                                        Value callable = pop();
-                                        deferredCallStack.push_back({callable, {}});
-                                        break;
-                                    }
-                                    case Opcode::OP_DEFERRED_RETURN: {
-                                        for (int i = static_cast<int>(deferredCallStack.size()) - 1; i >= 0; i--) {
-                                            auto& dc = deferredCallStack[i];
-                                            push(dc.callable);
-                                            Value calleeVal = peek(0);
-                                            if (calleeVal.isObject() && calleeVal.asObject()) {
-                                                auto* obj = calleeVal.asObject();
-                                                if (obj->type == ObjectType::Closure) {
-                                                    auto* closure = reinterpret_cast<Closure*>(obj);
-                                                    CallFrame df;
-                                                    df.function = closure->function;
-                                                    df.chunk = &closure->function->chunk;
-                                                    df.ip = 0;
-                                                    df.stackStart = static_cast<int>(stack.size()) - 1;
-                                                    callStack.push(df);
-                                                }
-                                            }
-                                        }
-                                        deferredCallStack.clear();
-                                        break;
-                                    }
-                                    case Opcode::OP_SEND: {
-                                        Value sendVal = pop();
-                                        Value chVal = pop();
-                                        if (chVal.isObject() && chVal.asObject() && chVal.asObject()->type == ObjectType::Channel) {
-                                            auto* ch = reinterpret_cast<ChannelObj*>(chVal.asObject());
-                                            ch->send(sendVal);
-                                        }
-                                        break;
-                                    }
-                                    case Opcode::OP_RECEIVE: {
-                                        Value chVal = pop();
-                                        if (chVal.isObject() && chVal.asObject() && chVal.asObject()->type == ObjectType::Channel) {
-                                            auto* ch = reinterpret_cast<ChannelObj*>(chVal.asObject());
-                                            push(ch->receive());
-                                        }
-                                        break;
-                                    }
-                                    case Opcode::OP_NOP:
-                                    case Opcode::OP_END:
-                                        break;
-                                    default:
-                                        reportError("Unknown opcode in goroutine: " + std::to_string(static_cast<int>(op)));
-                                        return;
-                                }
-                                fn = frame.function;
-                                ch = &fn->chunk;
+                            interpret();
+                            lock.unlock();
+                            if (!callStack.empty()) {
+                                callStack.pop();
                             }
                         });
                         t.detach();
                     }
                 }
-                // Pop function + args
+               // Pop function + args
                 for (int i = 0; i <= argCount; i++) pop();
                 break;
             }
@@ -1870,6 +1686,66 @@ void VM::run(Function* function) {
     if (!error) {
         printf("Result: %s\n", lastValue.toString().c_str());
     }
+}
+
+Value VM::loadModule(const std::string& moduleName) {
+    if (modules.count(moduleName)) {
+        return modules[moduleName];
+    }
+    
+    std::ifstream file(moduleName);
+    if (!file.is_open()) {
+        reportError("Cannot open module file: " + moduleName);
+        return Value();
+    }
+    
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string source = buffer.str();
+    file.close();
+    
+    Lexer lexer(source, moduleName);
+    auto tokens = lexer.tokenize();
+    if (lexer.hasErrors()) {
+        reportError("Lexer error in module: " + moduleName);
+        return Value();
+    }
+    
+    Parser parser(tokens);
+    auto program = parser.parse();
+    if (parser.hasErrors()) {
+        reportError("Parser error in module: " + moduleName);
+        return Value();
+    }
+    
+    Compiler compiler;
+    compiler.compile(program);
+    if (compiler.hasErrors()) {
+        reportError("Compiler error in module: " + moduleName);
+        return Value();
+    }
+    
+   Chunk* chunk = compiler.getChunk();
+    auto* func = new Function(moduleName, *chunk, 0, true, false);
+    
+    VM moduleVm;
+    moduleVm.run(func);
+    delete func;
+    
+   if (moduleVm.hasError()) {
+        reportError("Runtime error in module: " + moduleName + " - " + moduleVm.getError());
+        return Value();
+    }
+    
+    auto* exports = new MapObj();
+   // Copy all globals from module VM to exports
+    auto& modGlobals = moduleVm.getGlobals();
+    for (auto& [name, val] : modGlobals) {
+        exports->entries[name] = val;
+    }
+    Value moduleVal(Value(exports, Type::of(moduleName)));
+    modules[moduleName] = moduleVal;
+    return moduleVal;
 }
 
 } // namespace hs
