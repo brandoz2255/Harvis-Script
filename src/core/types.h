@@ -55,7 +55,10 @@ enum class TypeTag {
     Function,
     Native,
     Class,
-    Module
+    Module,
+    Channel,
+    Mutex,
+    WaitGroup
 };
 
 // Type representation for gradual typing
@@ -72,7 +75,43 @@ struct Type {
     static Type array() { return {TypeTag::Array, std::nullopt, {}}; }
     static Type object() { return {TypeTag::Object, std::nullopt, {}}; }
     static Type function() { return {TypeTag::Function, std::nullopt, {}}; }
+    static Type channel() { return {TypeTag::Channel, std::nullopt, {}}; }
+    static Type mutex() { return {TypeTag::Mutex, std::nullopt, {}}; }
+    static Type waitgroup() { return {TypeTag::WaitGroup, std::nullopt, {}}; }
     static Type of(std::string_view name) { return {TypeTag::Object, std::string(name), {}}; }
+    
+    std::string toString() const {
+        std::string result;
+        if (name.has_value()) {
+            result = name.value();
+        } else {
+            switch (tag) {
+                case TypeTag::Undefined: result = "undefined"; break;
+                case TypeTag::Null: result = "null"; break;
+                case TypeTag::Boolean: result = "boolean"; break;
+                case TypeTag::Number: result = "number"; break;
+                case TypeTag::String: result = "string"; break;
+                case TypeTag::Array: result = "array"; break;
+                case TypeTag::Object: result = "object"; break;
+                case TypeTag::Function: result = "function"; break;
+                case TypeTag::Native: result = "native"; break;
+                case TypeTag::Class: result = "class"; break;
+                case TypeTag::Module: result = "module"; break;
+                case TypeTag::Channel: result = "channel"; break;
+                case TypeTag::Mutex: result = "mutex"; break;
+                case TypeTag::WaitGroup: result = "waitgroup"; break;
+            }
+        }
+        if (!params.empty()) {
+            result += "<";
+            for (size_t i = 0; i < params.size(); i++) {
+                if (i > 0) result += ", ";
+                result += params[i].toString();
+            }
+            result += ">";
+        }
+        return result;
+    }
 };
 
 // Runtime value - tagged union

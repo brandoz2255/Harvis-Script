@@ -35,6 +35,9 @@ private:
     int localCount = 0;
     bool inClass = false;
     bool inFunction = false;
+    int loopDepth = -1;
+    std::vector<int> loopEndJumps;
+    std::vector<std::unordered_map<std::string, Type>> typeParamBindings;
     
     CompiledFunction* currentFunction() {
         if (functions.empty()) return nullptr;
@@ -52,6 +55,7 @@ private:
     
     // Variable access
     int resolveLocal(const std::string& name, bool errorIfNotFound);
+    int resolveLocalDepth(const std::string& name);
     void emitGetLocal(int slot);
     void emitSetLocal(int slot);
     
@@ -62,12 +66,25 @@ private:
     void emitJump(Opcode op, int& jumpOffset);
     void emitReturn();
     void emitCall(int argCount);
+    void patchJump(int jumpOffset, int target);
     
     // Helper methods
     void emitConstant(Value value);
     int makeConstant(Value value);
     int reserveSlot();
     int currentScope() const { return static_cast<int>(scopes.size()); }
+    
+    // Loop tracking
+    void enterLoop();
+    void exitLoop();
+    void emitJumpToLoopEnd(int& jumpOffset);
+    void patchLoopEnd(int jumpOffset, int target);
+    
+    // Type parameter handling
+    void pushTypeParams(const std::vector<std::string>& params);
+    void popTypeParams();
+    std::string resolveTypeParam(const std::string& name);
+    std::string mangleTypeName(const std::string& base, const std::vector<Type>& args);
     
     // Expression visitors
     void visitLiteralExpr(LiteralExpr* expr) override;
@@ -108,6 +125,22 @@ private:
     void visitTryStmt(TryStmt* stmt) override;
     void visitThrowStmt(ThrowStmt* stmt) override;
     void visitSwitchStmt(SwitchStmt* stmt) override;
+    void visitStructDeclStmt(StructDeclStmt* stmt) override;
+    void visitDeferStmt(DeferStmt* stmt) override;
+    void visitInterfaceDeclStmt(InterfaceDeclStmt* stmt) override;
+    void visitStructInstantiationExpr(StructInstantiationExpr* expr) override;
+    void visitPanicExpr(PanicExpr* expr) override;
+    void visitRecoverExpr(RecoverExpr* expr) override;
+    void visitChannelExpr(ChannelExpr* expr) override;
+    void visitSendExpr(SendExpr* expr) override;
+    void visitReceiveExpr(ReceiveExpr* expr) override;
+    void visitMutexExpr(MutexExpr* expr) override;
+   void visitWaitGroupExpr(WaitGroupExpr* expr) override;
+    void visitGoStmt(GoStmt* stmt) override;
+    void visitSelectStmt(SelectStmt* stmt) override;
+    void visitTypeAssertExpr(TypeAssertExpr* expr) override;
+    void visitRangeStmt(RangeStmt* stmt) override;
+    void visitTypeSwitchStmt(TypeSwitchStmt* stmt) override;
 };
 
 } // namespace hs

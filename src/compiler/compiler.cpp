@@ -679,12 +679,40 @@ void Compiler::visitExportStmt(ExportStmt* stmt) {
 }
 
 void Compiler::visitTryStmt(TryStmt* stmt) {
-    emitByte(Opcode::OP_TRY);
+    // OP_TRY catch_offset (2-byte jump to catch block)
+    int tryCatchJump = -1;
+    emitJump(Opcode::OP_TRY, tryCatchJump);
+
+    // Try body
     stmt->tryBlock->accept(*this);
-    if (stmt->catchClause.second) {
+
+    int hasCatch = (stmt->catchClause.second != nullptr);
+
+    if (hasCatch) {
+        // Jump over catch block if no exception
+        int skipCatchJump = -1;
+        emitJump(Opcode::OP_JUMP, skipCatchJump);
+
+        // Patch OP_TRY to point to catch block start
+        int catchStart = static_cast<int>(chunk.code.size());
+        patchJump(tryCatchJump, catchStart);
+
+        // Emit catch variable binding
+        int varIdx = chunk.findOrAddStringConstant(stmt->catchClause.first);
         emitByte(Opcode::OP_CATCH);
+        emitByte(static_cast<uint8_t>(varIdx));
+
+        // Catch body
         stmt->catchClause.second->accept(*this);
+
+        // Patch skipCatchJump to point past catch block
+        patchJump(skipCatchJump, static_cast<int>(chunk.code.size()));
+    } else {
+        // No catch block, patch OP_TRY to skip to after try
+        patchJump(tryCatchJump, static_cast<int>(chunk.code.size()));
     }
+
+    // Finally block (always runs)
     if (stmt->finallyBlock) {
         stmt->finallyBlock->accept(*this);
     }

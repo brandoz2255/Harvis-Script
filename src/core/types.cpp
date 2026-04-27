@@ -1,4 +1,5 @@
 #include "types.h"
+#include "../vm/object.h"
 #include <limits>
 
 namespace hs {
@@ -12,8 +13,9 @@ Value::~Value() {
             }
             break;
         case Kind::Object:
-            // Objects are managed by VM, not deleted here
-            // to avoid double-free when Values are copied
+            if (payload.asObject) {
+                payload.asObject->release();
+            }
             break;
         default:
             break;
@@ -27,7 +29,9 @@ Value::Value(const char* s)
     : kind(Kind::String), payload(new std::string(s)), type(Type::string()) {}
 
 Value::Value(RuntimeObject* obj, Type t)
-    : kind(Kind::Object), payload(obj), type(t) {}
+    : kind(Kind::Object), payload(obj), type(t) {
+    (void)obj;
+}
 
 Value::Value(Value&& other) noexcept 
     : kind(other.kind), type(std::move(other.type)) {
@@ -106,7 +110,7 @@ Value::Value(const Value& other)
             break;
         case Kind::Object:
             payload.asObject = other.payload.asObject;
-            // TODO: Reference counting
+            if (payload.asObject) payload.asObject->retain();
             break;
     }
 }
@@ -117,6 +121,9 @@ Value& Value::operator=(const Value& other) {
     // Clean up existing value
     if (kind == Kind::String && payload.asString) {
         delete payload.asString;
+    }
+    if (kind == Kind::Object && payload.asObject) {
+        payload.asObject->release();
     }
     
     kind = other.kind;
@@ -138,7 +145,7 @@ Value& Value::operator=(const Value& other) {
             break;
         case Kind::Object:
             payload.asObject = other.payload.asObject;
-            // TODO: Reference counting
+            if (payload.asObject) payload.asObject->retain();
             break;
     }
     
@@ -185,7 +192,12 @@ std::string Value::toString() const {
         case Kind::Boolean: return payload.asBool ? "true" : "false";
         case Kind::Number: return std::to_string(payload.asNumber);
         case Kind::String: return payload.asString ? *payload.asString : "";
-        case Kind::Object: return "[object " + std::string(type.name.value_or("Object")) + "]";
+        case Kind::Object: {
+            if (payload.asObject) {
+                return payload.asObject->toString();
+            }
+            return "[object " + std::string(type.name.value_or("Object")) + "]";
+        }
     }
     return "";
 }

@@ -63,3 +63,6 @@ temp/
 # Logs
 *.log
 logs/
+
+# Container images
+*.tar

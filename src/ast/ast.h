@@ -56,7 +56,25 @@ class ImportStmt;
 class ExportStmt;
 class TryStmt;
 class ThrowStmt;
-class SwitchStmt;
+class StructDeclStmt;
+class StructInstantiationExpr;
+class DeferStmt;
+class PanicExpr;
+class RecoverExpr;
+    class InterfaceDeclStmt;
+    class SwitchStmt;
+    class RangeStmt;
+    class TypeAssertExpr;
+    class TypeCase;
+    class TypeSwitchStmt;
+    class GoStmt;
+    class ChannelExpr;
+    class SendExpr;
+    class ReceiveExpr;
+    class SelectStmt;
+    class SelectCase;
+    class MutexExpr;
+    class WaitGroupExpr;
 
 // ============ OPERATOR ENUMS ============
 
@@ -66,7 +84,7 @@ enum class BinaryOp {
     PLUS_EQUAL, MINUS_EQUAL, STAR_EQUAL, SLASH_EQUAL, PERCENT_EQUAL,
     EQUAL_EQUAL, BANG_EQUAL,
     LESS, LESS_EQUAL, GREATER, GREATER_EQUAL,
-    AND, OR,
+    AND, OR, NULLISH_COALESCE,
     AMPERSAND, PIPE, CARET, TILDE,
     LESS_LESS, GREATER_GREATER,
     INSTANCE_OF, IN, TYPEOF
@@ -132,6 +150,15 @@ public:
     virtual void visitThisExpr(ThisExpr* expr) = 0;
     virtual void visitSuperExpr(SuperExpr* expr) = 0;
     virtual void visitTypeCastExpr(TypeCastExpr* expr) = 0;
+    virtual void visitStructInstantiationExpr(StructInstantiationExpr* expr) = 0;
+    virtual void visitPanicExpr(PanicExpr* expr) = 0;
+    virtual void visitRecoverExpr(RecoverExpr* expr) = 0;
+    virtual void visitChannelExpr(ChannelExpr* expr) = 0;
+    virtual void visitSendExpr(SendExpr* expr) = 0;
+    virtual void visitReceiveExpr(ReceiveExpr* expr) = 0;
+    virtual void visitMutexExpr(MutexExpr* expr) = 0;
+    virtual void visitWaitGroupExpr(WaitGroupExpr* expr) = 0;
+    virtual void visitTypeAssertExpr(TypeAssertExpr* expr) = 0;
 };
 
 class StatementVisitor {
@@ -156,6 +183,13 @@ public:
     virtual void visitTryStmt(TryStmt* stmt) = 0;
     virtual void visitThrowStmt(ThrowStmt* stmt) = 0;
     virtual void visitSwitchStmt(SwitchStmt* stmt) = 0;
+     virtual void visitStructDeclStmt(StructDeclStmt* stmt) = 0;
+    virtual void visitDeferStmt(DeferStmt* stmt) = 0;
+    virtual void visitInterfaceDeclStmt(InterfaceDeclStmt* stmt) = 0;
+   virtual void visitGoStmt(GoStmt* stmt) = 0;
+    virtual void visitSelectStmt(SelectStmt* stmt) = 0;
+    virtual void visitRangeStmt(RangeStmt* stmt) = 0;
+    virtual void visitTypeSwitchStmt(TypeSwitchStmt* stmt) = 0;
 };
 
 // ============ LITERAL EXPRESSIONS ============
@@ -264,11 +298,12 @@ public:
     Expr::Ptr callee;
     Token paren;
     std::vector<Expr::Ptr> arguments;
-    std::string typeParams;
+    std::vector<Type> typeArgs;
     
-    CallExpr(SourceLocation loc, Expr::Ptr c, Token p, std::vector<Expr::Ptr> args, std::string tp = "")
+    CallExpr(SourceLocation loc, Expr::Ptr c, Token p, std::vector<Expr::Ptr> args,
+             std::vector<Type> ta = {})
         : Expr(loc), callee(std::move(c)), paren(std::move(p)), 
-          arguments(std::move(args)), typeParams(std::move(tp)) {}
+          arguments(std::move(args)), typeArgs(std::move(ta)) {}
     
     void accept(Visitor& visitor) override { visitor.visitCallExpr(this); }
     std::string toString() const override {
@@ -545,19 +580,21 @@ class FunctionStmt : public Stmt {
 public:
     std::string name;
     std::vector<std::pair<std::string, Type>> parameters;
-    std::string returnType;
+    Type returnType;
     std::vector<Stmt::Ptr> body;
     bool isAsync;
     bool isGenerator;
     bool isConstructor;
     bool isStatic;
+    std::vector<std::string> typeParams;
     
     FunctionStmt(SourceLocation loc, std::string n, std::vector<std::pair<std::string, Type>> params,
-                 std::string rt, std::vector<Stmt::Ptr> b,
-                 bool async = false, bool gen = false, bool constr = false, bool stat = false)
+                 Type rt, std::vector<Stmt::Ptr> b,
+                 bool async = false, bool gen = false, bool constr = false, bool stat = false,
+                 std::vector<std::string> tp = {})
         : Stmt(loc), name(std::move(n)), parameters(std::move(params)),
-          returnType(std::move(rt)), body(std::move(b)), isAsync(async),
-          isGenerator(gen), isConstructor(constr), isStatic(stat) {}
+          returnType(rt), body(std::move(b)), isAsync(async),
+          isGenerator(gen), isConstructor(constr), isStatic(stat), typeParams(std::move(tp)) {}
     
     void accept(StatementVisitor& visitor) override { visitor.visitFunctionStmt(this); }
     std::string toString() const override { return "FunctionStmt(" + name + ")"; }
@@ -603,9 +640,13 @@ public:
           isConst(constDecl), isLet(letDecl) {}
     
     void accept(StatementVisitor& visitor) override { visitor.visitVarDeclStmt(this); }
-    std::string toString() const override {
+std::string toString() const override {
         std::string kind = isConst ? "const" : (isLet ? "let" : "var");
-        return kind + "(" + name + ")";
+        std::string result = kind + "(" + name + ")";
+        if (initializer) {
+            result += " = " + initializer->toString();
+        }
+        return result;
     }
 };
 
@@ -686,11 +727,232 @@ public:
     };
     std::vector<Case> cases;
     
-    SwitchStmt(SourceLocation loc, Expr::Ptr expr, std::vector<Case> cs)
+   SwitchStmt(SourceLocation loc, Expr::Ptr expr, std::vector<Case> cs)
         : Stmt(loc), expression(std::move(expr)), cases(std::move(cs)) {}
     
     void accept(StatementVisitor& visitor) override { visitor.visitSwitchStmt(this); }
     std::string toString() const override { return "SwitchStmt"; }
+};
+
+class RangeStmt : public Stmt {
+public:
+    std::vector<std::string> variables;
+    Expr::Ptr collection;
+    Stmt::Ptr body;
+    bool isAsync;
+    
+    RangeStmt(SourceLocation loc, std::vector<std::string> vars, Expr::Ptr coll, Stmt::Ptr b, bool async = false)
+        : Stmt(loc), variables(std::move(vars)), collection(std::move(coll)), body(std::move(b)), isAsync(async) {}
+    
+    void accept(StatementVisitor& visitor) override { visitor.visitRangeStmt(this); }
+    std::string toString() const override { return "RangeStmt"; }
+};
+
+class TypeAssertExpr : public Expr {
+public:
+    Expr::Ptr expression;
+    Type type;
+    
+    TypeAssertExpr(SourceLocation loc, Expr::Ptr expr, Type t)
+        : Expr(loc), expression(std::move(expr)), type(std::move(t)) {}
+    
+    void accept(Visitor& visitor) override { visitor.visitTypeAssertExpr(this); }
+    std::string toString() const override { return "TypeAssertExpr"; }
+};
+
+class TypeCase : public AstNode {
+public:
+    Type type;
+    std::vector<Stmt::Ptr> statements;
+    
+    TypeCase(SourceLocation loc, Type t, std::vector<Stmt::Ptr> stmts)
+        : AstNode(loc), type(std::move(t)), statements(std::move(stmts)) {}
+    
+    std::string toString() const override { return "TypeCase"; }
+};
+
+class TypeSwitchStmt : public Stmt {
+public:
+    Expr::Ptr expression;
+    std::vector<TypeCase> cases;
+    std::vector<Stmt::Ptr> defaultStatements;
+    
+    TypeSwitchStmt(SourceLocation loc, Expr::Ptr expr, std::vector<TypeCase> cs, std::vector<Stmt::Ptr> def)
+        : Stmt(loc), expression(std::move(expr)), cases(std::move(cs)), defaultStatements(std::move(def)) {}
+    
+    void accept(StatementVisitor& visitor) override { visitor.visitTypeSwitchStmt(this); }
+    std::string toString() const override { return "TypeSwitchStmt"; }
+};
+
+// ============ STRUCTS ============
+
+class StructDeclStmt : public Stmt {
+public:
+    std::string name;
+    std::vector<std::pair<std::string, Type>> fields;
+    std::vector<std::string> typeParams;
+    
+    StructDeclStmt(SourceLocation loc, std::string n, std::vector<std::pair<std::string, Type>> fs,
+                   std::vector<std::string> tp = {})
+        : Stmt(loc), name(std::move(n)), fields(std::move(fs)), typeParams(std::move(tp)) {}
+    
+    void accept(StatementVisitor& visitor) override { visitor.visitStructDeclStmt(this); }
+    std::string toString() const override { return "StructDeclStmt(" + name + ")"; }
+};
+
+class StructInstantiationExpr : public Expr {
+public:
+    std::string name;
+    struct Field {
+        std::string name;
+        Expr::Ptr value;
+    };
+    std::vector<Field> fields;
+    std::vector<Type> typeArgs;
+    
+    StructInstantiationExpr(SourceLocation loc, std::string n, std::vector<Field> fs,
+                            std::vector<Type> ta = {})
+        : Expr(loc), name(std::move(n)), fields(std::move(fs)), typeArgs(std::move(ta)) {}
+    
+    void accept(Visitor& visitor) override { visitor.visitStructInstantiationExpr(this); }
+    std::string toString() const override { return "StructInstantiationExpr(" + name + ")"; }
+};
+
+class DeferStmt : public Stmt {
+public:
+    Expr::Ptr expression;
+    
+    DeferStmt(SourceLocation loc, Expr::Ptr expr)
+        : Stmt(loc), expression(std::move(expr)) {}
+    
+    void accept(StatementVisitor& visitor) override { visitor.visitDeferStmt(this); }
+    std::string toString() const override { return "DeferStmt"; }
+};
+
+class PanicExpr : public Expr {
+public:
+    Expr::Ptr value;
+    
+    PanicExpr(SourceLocation loc, Expr::Ptr v)
+        : Expr(loc), value(std::move(v)) {}
+    
+    void accept(Visitor& visitor) override { visitor.visitPanicExpr(this); }
+    std::string toString() const override { return "PanicExpr"; }
+};
+
+class RecoverExpr : public Expr {
+public:
+    RecoverExpr(SourceLocation loc)
+        : Expr(loc) {}
+    
+    void accept(Visitor& visitor) override { visitor.visitRecoverExpr(this); }
+    std::string toString() const override { return "RecoverExpr"; }
+};
+
+// ============ INTERFACES ============
+
+class InterfaceDeclStmt : public Stmt {
+public:
+    std::string name;
+    struct Method {
+        std::string name;
+        std::vector<std::pair<std::string, Type>> params;
+        Type returnType;
+    };
+    std::vector<Method> methods;
+    
+    InterfaceDeclStmt(SourceLocation loc, std::string n, std::vector<Method> ms)
+        : Stmt(loc), name(std::move(n)), methods(std::move(ms)) {}
+    
+    void accept(StatementVisitor& visitor) override { visitor.visitInterfaceDeclStmt(this); }
+    std::string toString() const override { return "InterfaceDeclStmt(" + name + ")"; }
+};
+
+// ============ GOROUTINES ============
+
+class GoStmt : public Stmt {
+public:
+    Expr::Ptr function;
+    std::vector<Expr::Ptr> args;
+    
+    GoStmt(SourceLocation loc, Expr::Ptr fn, std::vector<Expr::Ptr> a)
+        : Stmt(loc), function(std::move(fn)), args(std::move(a)) {}
+    
+    void accept(StatementVisitor& visitor) override { visitor.visitGoStmt(this); }
+    std::string toString() const override { return "GoStmt"; }
+};
+
+class ChannelExpr : public Expr {
+public:
+    Expr::Ptr capacity;
+    
+    ChannelExpr(SourceLocation loc, Expr::Ptr cap = nullptr)
+        : Expr(loc), capacity(std::move(cap)) {}
+    
+    void accept(Visitor& visitor) override { visitor.visitChannelExpr(this); }
+    std::string toString() const override { return "ChannelExpr"; }
+};
+
+class SendExpr : public Expr {
+public:
+    Expr::Ptr channel;
+    Expr::Ptr value;
+    
+    SendExpr(SourceLocation loc, Expr::Ptr ch, Expr::Ptr val)
+        : Expr(loc), channel(std::move(ch)), value(std::move(val)) {}
+    
+    void accept(Visitor& visitor) override { visitor.visitSendExpr(this); }
+    std::string toString() const override { return "SendExpr"; }
+};
+
+class ReceiveExpr : public Expr {
+public:
+    Expr::Ptr channel;
+    bool commaOk;
+    
+    ReceiveExpr(SourceLocation loc, Expr::Ptr ch, bool co = false)
+        : Expr(loc), channel(std::move(ch)), commaOk(co) {}
+    
+    void accept(Visitor& visitor) override { visitor.visitReceiveExpr(this); }
+    std::string toString() const override { return "ReceiveExpr"; }
+};
+
+class SelectCase {
+public:
+    Expr::Ptr channel;
+    Expr::Ptr value;
+    bool isSend;
+    std::vector<Stmt::Ptr> body;
+    bool isDefault;
+};
+
+class SelectStmt : public Stmt {
+public:
+    std::vector<SelectCase> cases;
+    
+    SelectStmt(SourceLocation loc, std::vector<SelectCase> cs)
+        : Stmt(loc), cases(std::move(cs)) {}
+    
+    void accept(StatementVisitor& visitor) override { visitor.visitSelectStmt(this); }
+    std::string toString() const override { return "SelectStmt"; }
+};
+
+class MutexExpr : public Expr {
+public:
+    MutexExpr(SourceLocation loc)
+        : Expr(loc) {}
+    
+    void accept(Visitor& visitor) override { visitor.visitMutexExpr(this); }
+    std::string toString() const override { return "MutexExpr"; }
+};
+
+class WaitGroupExpr : public Expr {
+public:
+    WaitGroupExpr(SourceLocation loc)
+        : Expr(loc) {}
+    
+    void accept(Visitor& visitor) override { visitor.visitWaitGroupExpr(this); }
+    std::string toString() const override { return "WaitGroupExpr"; }
 };
 
 // ============ PROGRAM ============

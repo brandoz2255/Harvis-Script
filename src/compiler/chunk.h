@@ -35,13 +35,20 @@ struct Chunk {
 
     void writeString(const std::string& value, int line) {
         (void)line;
-        code.push_back(static_cast<uint8_t>(Opcode::OP_CONST_STRING));
+        int index = static_cast<int>(constants.size());
         constants.push_back(Value(value));
+        code.push_back(static_cast<uint8_t>(Opcode::OP_CONST_STRING));
+        code.push_back(static_cast<uint8_t>(index));
         lines.push_back(value);
     }
     
-    // Add a string constant and return its index
-    int addStringConstant(const std::string& value) {
+    // Find or add a string constant and return its index
+    int findOrAddStringConstant(const std::string& value) {
+        for (int i = 0; i < static_cast<int>(constants.size()); i++) {
+            if (constants[i].isString() && constants[i].toString() == value) {
+                return i;
+            }
+        }
         int index = static_cast<int>(constants.size());
         constants.push_back(Value(value));
         return index;

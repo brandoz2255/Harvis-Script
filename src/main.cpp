@@ -33,21 +33,114 @@ void printBytecode(const Chunk& chunk) {
         std::cout << std::setw(4) << i << " | " << std::setw(25) << opcodeName(op) << " | ";
         
         if (op == Opcode::OP_CONST_NUMBER || op == Opcode::OP_CONST_STRING) {
-            std::cout << "constant[" << (int)chunk.code[i + 1] << "]";
-            i++;
+            if (i + 1 < chunk.code.size()) {
+                std::cout << "constant[" << (int)chunk.code[i + 1] << "]";
+            }
+            i += 2;
+            std::cout << "\n";
+            continue;
+        } else if (op == Opcode::OP_CLOSURE) {
+            int upvalueCount = 0;
+            if (i + 2 < chunk.code.size()) {
+                upvalueCount = chunk.code[i + 2];
+            }
+            std::cout << "func[" << (int)chunk.code[i + 1] << "] upvalues[" << upvalueCount << "]";
+            i += 3 + upvalueCount;
+            std::cout << "\n";
+            continue;
+        } else if (op == Opcode::OP_CONST_FUNCTION || op == Opcode::OP_GET_UPVALUE || 
+                   op == Opcode::OP_SET_UPVALUE || op == Opcode::OP_CLOSE_UPVALUE) {
+            if (i + 1 < chunk.code.size()) {
+                std::cout << "index[" << (int)chunk.code[i + 1] << "]";
+            }
+            i += 2;
+            std::cout << "\n";
+            continue;
         } else if (op == Opcode::OP_GET_LOCAL || op == Opcode::OP_SET_LOCAL || 
                    op == Opcode::OP_CALL || op == Opcode::OP_GET_GLOBAL || op == Opcode::OP_SET_GLOBAL) {
-            i++;
-            std::cout << (int)chunk.code[i];
-        } else if (op == Opcode::OP_JUMP || op == Opcode::OP_JUMP_IF_FALSE || 
+            if (i + 1 < chunk.code.size()) {
+                std::cout << (int)chunk.code[i + 1];
+            }
+            i += 2;
+            std::cout << "\n";
+            continue;
+} else if (op == Opcode::OP_JUMP || op == Opcode::OP_JUMP_IF_FALSE || 
                    op == Opcode::OP_JUMP_IF_TRUE || op == Opcode::OP_LOOP) {
-            i++;
-            std::cout << "to " << (i + chunk.code[i]);
-        } else {
+            int offset = 0;
+            if (i + 2 < chunk.code.size()) {
+                offset = chunk.code[i + 1] | (chunk.code[i + 2] << 8);
+                if (offset & 0x8000) offset -= 0x10000;
+            }
+            std::cout << "to " << (i + 2 + offset);
+            i += 3;
+            std::cout << "\n";
+            continue;
+        } else if (op == Opcode::OP_NEW_ARRAY || op == Opcode::OP_NEW_OBJECT) {
+            if (i + 1 < chunk.code.size()) {
+                std::cout << "count[" << (int)chunk.code[i + 1] << "]";
+            }
+            i += 2;
+            std::cout << "\n";
+            continue;
+        } else if (op == Opcode::OP_NEW_STRUCT) {
+            if (i + 2 < chunk.code.size()) {
+                int nameIdx = chunk.code[i + 1];
+                int fieldCount = chunk.code[i + 2];
+                std::cout << "struct[" << nameIdx << "] fields[" << fieldCount << "]";
+                i += 3 + fieldCount;
+                std::cout << "\n";
+                continue;
+            } else {
+                i += 3;
+                std::cout << "\n";
+                continue;
+            }
+        } else if (op == Opcode::OP_GET_FIELD || op == Opcode::OP_SET_FIELD || 
+                   op == Opcode::OP_IS_INSTANCE || op == Opcode::OP_INVOKE || op == Opcode::OP_CLOSE_UPVALUE ||
+                   op == Opcode::OP_GET_FIELD_OPTIONAL) {
+            if (i + 1 < chunk.code.size()) {
+                std::cout << "index[" << (int)chunk.code[i + 1] << "]";
+            }
+            i += 2;
+            std::cout << "\n";
+            continue;
+} else if (op == Opcode::OP_GET_INDEX_OPTIONAL || op == Opcode::OP_NULLISH_COALESCE) {
+             std::cout << " ";
+             i++;
+             std::cout << "\n";
+             continue;
+        } else if (op == Opcode::OP_TYPE_CHECK) {
+             if (i + 1 < chunk.code.size()) {
+                 std::cout << "typeIdx[" << (int)chunk.code[i + 1] << "]";
+             }
+             i += 2;
+             std::cout << "\n";
+             continue;
+       } else if (op == Opcode::OP_EXPORT) {
+             if (i + 1 < chunk.code.size()) {
+                 std::cout << "nameIdx[" << (int)chunk.code[i + 1] << "]";
+             }
+             i += 2;
+             std::cout << "\n";
+             continue;
+        } else if (op == Opcode::OP_DEFER || op == Opcode::OP_DEFERRED_RETURN ||
+                     op == Opcode::OP_PANIC || op == Opcode::OP_RECOVER ||
+                     op == Opcode::OP_SELECT_CASE || op == Opcode::OP_SELECT_DEFAULT ||
+                     op == Opcode::OP_SELECT_CASE_END || op == Opcode::OP_SEND ||
+                     op == Opcode::OP_RECEIVE || op == Opcode::OP_MAKE_CHANNEL ||
+                     op == Opcode::OP_SELECT || op == Opcode::OP_GO ||
+                     op == Opcode::OP_MUTEX_NEW || op == Opcode::OP_MUTEX_LOCK ||
+                     op == Opcode::OP_MUTEX_UNLOCK || op == Opcode::OP_WAITGROUP_NEW ||
+                     op == Opcode::OP_WAITGROUP_ADD || op == Opcode::OP_WAITGROUP_WAIT) {
             std::cout << " ";
+            i++;
+            std::cout << "\n";
+            continue;
+       } else {
+            std::cout << " ";
+            i++;
+            std::cout << "\n";
         }
-        std::cout << "\n";
-        i++;
     }
     std::cout << "Constants:\n";
     for (size_t i = 0; i < chunk.constants.size(); i++) {

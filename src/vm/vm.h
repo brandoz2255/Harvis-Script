@@ -8,6 +8,7 @@
 #include <memory>
 #include <stack>
 #include <unordered_map>
+#include <thread>
 
 namespace hs {
 
@@ -18,7 +19,6 @@ public:
     
     // Run bytecode
     void run(Function* function);
-    void runChunk(Chunk& chunk);
     
     // Get last result
     Value lastResult() const { return lastValue; }
@@ -31,9 +31,6 @@ private:
     std::vector<Value> stack;
     std::vector<std::shared_ptr<Upvalue>> upvalues;
     std::unordered_map<std::string, Value> globals;
-    std::vector<Value> frames[64];  // Stack frames
-    int frameCount;
-    
     bool error;
     std::string errorMessage;
     Value lastValue;
@@ -52,9 +49,33 @@ private:
         Chunk* chunk;
         int ip;  // Instruction pointer
         int stackStart;
+        std::vector<Value> locals;  // Separate local variable storage
     };
     
     std::stack<CallFrame> callStack;
+    
+    // Defer support
+    struct DeferCall {
+        Value callable;
+        std::vector<Value> args;
+    };
+    std::vector<DeferCall> deferredCallStack;
+
+    // Try/Catch support
+    struct TryFrame {
+        int tryBodyStart;    // IP where try body begins
+        int catchIP;         // IP of OP_CATCH
+        int stackDepth;      // stack depth at try start
+        int callDepth;       // callStack depth at try start
+    };
+    std::vector<TryFrame> tryStack;
+
+    // Panic support
+    Value panicValue;
+    bool panicActive;
+    
+    // Recover support
+    Value recoverValue;
     
     // Execution
     bool interpret();
@@ -68,9 +89,10 @@ private:
     
     // Native functions
     void registerNatives();
-    
+
     // Helper
     void reportError(const std::string& message);
+    void executeDeferred();
 };
 
 } // namespace hs

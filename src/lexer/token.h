@@ -37,6 +37,18 @@ enum class TokenType {
     SWITCH_KEYWORD,
     CASE_KEYWORD,
     DEFAULT_KEYWORD,
+   RANGE_KEYWORD,
+    IN_KEYWORD,
+    TYPE_SWITCH_KEYWORD,
+    STRUCT_KEYWORD,
+    DEFER_KEYWORD,
+    PANIC_KEYWORD,
+    RECOVER_KEYWORD,
+    GO_KEYWORD,
+    CHANNEL_KEYWORD,
+    SELECT_KEYWORD,
+    MUTEX_KEYWORD,
+    WAITGROUP_KEYWORD,
     
     // Functions & classes
     FUNCTION_KEYWORD,  // function
@@ -104,6 +116,7 @@ enum class TokenType {
     
     AND,             // &&
     OR,              // ||
+    NULLISH_COALESCE, // ??
     QUESTION,        // ?
     COLON,           // :
     SEMICOLON,       // ;
@@ -111,6 +124,7 @@ enum class TokenType {
     
     // Access & delimiters
     DOT,             // .
+    DOT_QUESTION,    // ?. (optional chaining)
     DOT_DOT,         // .. (spread/rest)
     DOT_DOT_DOT,     // ... (rest/spread)
     ARROW,           // =>

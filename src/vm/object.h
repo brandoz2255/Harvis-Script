@@ -8,6 +8,9 @@
 #include <string>
 #include <unordered_map>
 #include <functional>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
 
 namespace hs {
 
@@ -24,16 +27,26 @@ enum class ObjectType {
     BoundMethod,
     Array,
     String,
-    Map
+    Map,
+    Channel,
+    Mutex,
+    WaitGroup
 };
 
-// Base object class
+// Base object class with reference counting
 class RuntimeObject {
 public:
     ObjectType type;
     Type declaredType;
+    int refCount;
     
-    RuntimeObject(ObjectType t, Type dt = Type::object()) : type(t), declaredType(dt) {}
+    RuntimeObject(ObjectType t, Type dt = Type::object()) : type(t), declaredType(dt), refCount(1) {}
+    
+    void retain() { refCount++; }
+    void release() { 
+        if (--refCount <= 0) delete this; 
+    }
+    
     virtual ~RuntimeObject() = default;
     
     virtual std::string toString() const {
@@ -192,6 +205,111 @@ public:
         }
         result += "}";
         return result;
+    }
+};
+
+// Channel object (Go-style buffered channel)
+class ChannelObj : public RuntimeObject {
+public:
+    int capacity;
+    std::queue<Value> queue;
+    std::mutex mtx;
+    std::condition_variable notFull;
+    std::condition_variable notEmpty;
+    bool closed;
+    
+    ChannelObj(int cap = 0) : RuntimeObject(ObjectType::Channel, Type::channel()), capacity(cap), closed(false) {}
+    
+    void send(Value value) {
+        std::unique_lock<std::mutex> lock(mtx);
+        if (static_cast<int>(queue.size()) >= capacity) {
+            notFull.wait(lock, [this]() { return static_cast<int>(queue.size()) < capacity || closed; });
+        }
+        if (closed) return;
+        queue.push(std::move(value));
+        notEmpty.notify_one();
+    }
+    
+    Value receive() {
+        std::unique_lock<std::mutex> lock(mtx);
+        if (queue.empty() && !closed) {
+            notEmpty.wait(lock, [this]() { return !queue.empty() || closed; });
+        }
+        if (queue.empty() && closed) {
+            return Value();
+        }
+        Value value = std::move(queue.front());
+        queue.pop();
+        notFull.notify_one();
+        return value;
+    }
+    
+    void close() {
+        std::unique_lock<std::mutex> lock(mtx);
+        closed = true;
+        notEmpty.notify_all();
+        notFull.notify_all();
+    }
+    
+    bool isClosed() {
+        std::unique_lock<std::mutex> lock(mtx);
+        return closed;
+    }
+    
+    std::string toString() const override {
+        return "[Channel cap=" + std::to_string(capacity) + " len=" + std::to_string(queue.size()) + "]";
+    }
+};
+
+// Mutex object (Go-style sync.Mutex)
+class MutexObj : public RuntimeObject {
+public:
+    std::mutex mtx;
+    
+    MutexObj() : RuntimeObject(ObjectType::Mutex, Type::mutex()) {}
+    
+    void lock() { mtx.lock(); }
+    void unlock() { mtx.unlock(); }
+    
+    std::string toString() const override {
+        return "[Mutex]";
+    }
+};
+
+// WaitGroup object (Go-style sync.WaitGroup)
+class WaitGroupObj : public RuntimeObject {
+public:
+    int counter;
+    std::mutex mtx;
+    std::condition_variable cv;
+    
+    WaitGroupObj() : RuntimeObject(ObjectType::WaitGroup, Type::waitgroup()), counter(0) {}
+    
+    void add(int delta) {
+        std::lock_guard<std::mutex> lock(mtx);
+        counter += delta;
+    }
+    
+    void wait() {
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock, [this]() { return counter <= 0; });
+    }
+    
+    void done() {
+        std::lock_guard<std::mutex> lock(mtx);
+        counter--;
+        if (counter <= 0) {
+            cv.notify_all();
+        }
+    }
+    
+    int count() {
+        std::lock_guard<std::mutex> lock(mtx);
+        return counter;
+    }
+    
+    std::string toString() const override {
+        return "[WaitGroup counter=" + std::to_string(counter) + "]";
     }
 };
 

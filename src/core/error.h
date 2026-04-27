@@ -4,7 +4,7 @@
 #include "types.h"
 #include <stdexcept>
 #include <string>
-#include <format>
+#include <sstream>
 
 namespace hs {
 

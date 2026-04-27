@@ -30,6 +30,7 @@ private:
     
     // Token access
     const Token& peek() const { return tokens[current]; }
+    const Token& peekNext() const { return current + 1 < static_cast<int>(tokens.size()) ? tokens[current + 1] : tokens.back(); }
     const Token& previous() const { return tokens[current - 1]; }
     const Token& advance();
     
@@ -63,6 +64,7 @@ private:
     Expr::Ptr parseAssignment();
     Expr::Ptr parseLogicalOr();
     Expr::Ptr parseLogicalAnd();
+    Expr::Ptr parseNullishCoalescing();
     Expr::Ptr parseBitwiseOr();
     Expr::Ptr parseBitwiseXor();
     Expr::Ptr parseBitwiseAnd();
@@ -83,7 +85,7 @@ private:
     
     // Statement parsing
     Stmt::Ptr parseClass();
-    Stmt::Ptr parseFunction();
+    Stmt::Ptr parseFunction(bool expectName = true);
     Stmt::Ptr parseVariable(bool isLet);
     Stmt::Ptr parseConst();
     Stmt::Ptr parseIf();
@@ -98,10 +100,34 @@ private:
     Stmt::Ptr parseTry();
     Stmt::Ptr parseThrow();
     Stmt::Ptr parseSwitch();
+    Stmt::Ptr parseRange();
+    Stmt::Ptr parseTypeSwitch();
     
     // Type parsing (for gradual typing)
     Type parseType();
-    std::string parseTypeAnnotation();
+    std::vector<Type> parseTypeArgs();
+    Type parseTypeAnnotation();
+    
+    // Struct/interface parsing
+    std::vector<std::pair<std::string, Type>> parseFieldList();
+    Stmt::Ptr parseStruct();
+    Stmt::Ptr parseInterface();
+    Expr::Ptr parseStructInstantiation();
+    
+    // Defer/panic/recover parsing
+    Stmt::Ptr parseDefer();
+    Expr::Ptr parsePanic();
+    Expr::Ptr parseRecover();
+    
+    // Goroutine/channel parsing
+    Stmt::Ptr parseGo();
+    Expr::Ptr parseChannel();
+    Expr::Ptr parseSend(Expr::Ptr channel);
+    Expr::Ptr parseReceive();
+    Stmt::Ptr parseSelect();
+    SelectCase parseSelectCase();
+    Expr::Ptr parseMutex();
+    Expr::Ptr parseWaitGroup();
 };
 
 // Convenience function

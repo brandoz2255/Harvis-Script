@@ -44,19 +44,22 @@ void Lexer::scanToken() {
         case '[': addToken(TokenType::LEFT_BRACKET); break;
         case ']': addToken(TokenType::RIGHT_BRACKET); break;
         case ',': addToken(TokenType::COMMA); break;
-        case '.':
-            if (buffer.check('.')) {
-                buffer.advance();
-                if (buffer.check('.')) {
-                    buffer.advance();
-                    addToken(TokenType::DOT_DOT_DOT);
-                } else {
-                    addToken(TokenType::DOT_DOT);
-                }
-            } else {
-                addToken(TokenType::DOT);
-            }
-            break;
+      case '.':
+             if (buffer.check('?')) {
+                 buffer.advance();
+                 addToken(TokenType::DOT_QUESTION);
+             } else if (buffer.check('.')) {
+                 buffer.advance();
+                 if (buffer.check('.')) {
+                     buffer.advance();
+                     addToken(TokenType::DOT_DOT_DOT);
+                 } else {
+                     addToken(TokenType::DOT_DOT);
+                 }
+             } else {
+                 addToken(TokenType::DOT);
+             }
+             break;
         case ';': addToken(TokenType::SEMICOLON); break;
         case '!':
             if (buffer.match('=')) addToken(TokenType::BANG_EQUAL);
@@ -102,7 +105,13 @@ void Lexer::scanToken() {
             else if (buffer.match('=')) addToken(TokenType::GREATER_EQUAL);
             else addToken(TokenType::GREATER);
             break;
-        case '?': addToken(TokenType::QUESTION); break;
+        case '?':
+                 if (buffer.match('?')) {
+                     addToken(TokenType::NULLISH_COALESCE);
+                 } else {
+                     addToken(TokenType::QUESTION);
+                 }
+                 break;
         case ':': addToken(TokenType::COLON); break;
         case '|':
             if (buffer.match('|')) addToken(TokenType::OR);
