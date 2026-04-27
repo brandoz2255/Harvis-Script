@@ -1026,19 +1026,11 @@ case Opcode::OP_GET_PROPERTY: {
             }
             
             case Opcode::OP_EXPORT: {
-                // Mark the top of stack as exported
-                // Get the current module (top of globals if it's a Map)
-                if (stack.empty()) break;
                 uint8_t nameIdx = chunk->code[callStack.top().ip++];
                 std::string exportName = chunk->constants[nameIdx].toString();
                 
-                // Find the current module - check globals for module objects
-                for (auto& [name, mod] : modules) {
-                    if (mod.isObject() && mod.asObject() && mod.asObject()->type == ObjectType::Map) {
-                        auto* mapObj = reinterpret_cast<MapObj*>(mod.asObject());
-                        mapObj->entries[exportName] = stack.back();
-                    }
-                }
+                Value exportValue = peek(0);
+                currentModule->entries[exportName] = exportValue;
                 break;
             }
 
@@ -1689,11 +1681,20 @@ void VM::run(Function* function) {
 }
 
 Value VM::loadModule(const std::string& moduleName) {
-    if (modules.count(moduleName)) {
-        return modules[moduleName];
+    std::string resolvedPath = moduleName;
+    
+    if (!modules.count(resolvedPath)) {
+        std::ifstream file(resolvedPath);
+        if (!file.is_open()) {
+            resolvedPath = "stdlib/" + moduleName;
+        }
     }
     
-    std::ifstream file(moduleName);
+    if (modules.count(resolvedPath)) {
+        return modules[resolvedPath];
+    }
+    
+    std::ifstream file(resolvedPath);
     if (!file.is_open()) {
         reportError("Cannot open module file: " + moduleName);
         return Value();
@@ -1704,47 +1705,58 @@ Value VM::loadModule(const std::string& moduleName) {
     std::string source = buffer.str();
     file.close();
     
-    Lexer lexer(source, moduleName);
+    Lexer lexer(source, resolvedPath);
     auto tokens = lexer.tokenize();
     if (lexer.hasErrors()) {
-        reportError("Lexer error in module: " + moduleName);
+        reportError("Lexer error in module: " + resolvedPath);
         return Value();
     }
     
     Parser parser(tokens);
     auto program = parser.parse();
     if (parser.hasErrors()) {
-        reportError("Parser error in module: " + moduleName);
+        reportError("Parser error in module: " + resolvedPath);
         return Value();
     }
     
     Compiler compiler;
     compiler.compile(program);
     if (compiler.hasErrors()) {
-        reportError("Compiler error in module: " + moduleName);
+        reportError("Compiler error in module: " + resolvedPath);
         return Value();
     }
     
-   Chunk* chunk = compiler.getChunk();
-    auto* func = new Function(moduleName, *chunk, 0, true, false);
+    Chunk* chunk = compiler.getChunk();
+    auto* func = new Function(resolvedPath, *chunk, 0, true, false);
     
     VM moduleVm;
+    auto* exports = new MapObj();
+    moduleVm.currentModule = exports;
     moduleVm.run(func);
     delete func;
     
-   if (moduleVm.hasError()) {
-        reportError("Runtime error in module: " + moduleName + " - " + moduleVm.getError());
+    if (moduleVm.hasError()) {
+        reportError("Runtime error in module: " + resolvedPath + " - " + moduleVm.getError());
         return Value();
     }
     
-    auto* exports = new MapObj();
-   // Copy all globals from module VM to exports
     auto& modGlobals = moduleVm.getGlobals();
     for (auto& [name, val] : modGlobals) {
-        exports->entries[name] = val;
+        if (val.isObject() && val.asObject()) {
+            auto* obj = val.asObject();
+            if (obj->type == ObjectType::Closure || obj->type == ObjectType::Function || obj->type == ObjectType::Native) {
+                exports->entries[name] = val;
+            }
+        } else if (val.isNumber() || val.isString() || val.isBoolean() || val.isNull()) {
+            exports->entries[name] = val;
+        }
     }
-    Value moduleVal(Value(exports, Type::of(moduleName)));
-    modules[moduleName] = moduleVal;
+    
+    Value moduleVal(Value(exports, Type::of(resolvedPath)));
+    modules[resolvedPath] = moduleVal;
+    if (moduleName != resolvedPath) {
+        modules[moduleName] = moduleVal;
+    }
     return moduleVal;
 }
 

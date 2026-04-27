@@ -63,6 +63,7 @@ private:
 
     // Module system
     std::unordered_map<std::string, Value> modules;
+    MapObj* currentModule;
 
     // Try/Catch support
     struct TryFrame {

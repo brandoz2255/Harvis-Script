@@ -645,7 +645,6 @@ void Compiler::visitConstDeclStmt(ConstDeclStmt* stmt) {
 }
 
   void Compiler::visitImportStmt(ImportStmt* stmt) {
-    // Generate variable name from module filename if none specified
     bool shorthandImport = stmt->defaultImport.empty() && 
                            stmt->namedImports.empty() && 
                            stmt->namespaceImport.empty();
@@ -655,49 +654,45 @@ void Compiler::visitConstDeclStmt(ConstDeclStmt* stmt) {
         size_t start = (lastSlash != std::string::npos) ? lastSlash + 1 : 0;
         size_t dotPos = stmt->moduleName.find('.', start);
         std::string basename = stmt->moduleName.substr(start, dotPos - start);
-        // Replace non-alphanumeric chars with underscore
         for (char& c : basename) {
             if (!std::isalnum(c)) c = '_';
         }
         varName = basename;
     }
     
-    // Push module name as string constant
     int modIdx = chunk.findOrAddStringConstant(stmt->moduleName);
     emitByte(Opcode::OP_CONST_STRING);
     emitByte(static_cast<uint8_t>(modIdx));
-    
-    // Emit OP_IMPORT to load the module
     emitByte(Opcode::OP_IMPORT);
     
-    // For default imports, set the variable
+    if (!stmt->namedImports.empty()) {
+        for (const auto& name : stmt->namedImports) {
+            emitByte(Opcode::OP_DUP);
+            int nameIdx = chunk.findOrAddStringConstant(name.first);
+            emitByte(Opcode::OP_CONST_STRING);
+            emitByte(static_cast<uint8_t>(nameIdx));
+            emitByte(Opcode::OP_GET_PROPERTY);
+            int varIdx = chunk.findOrAddStringConstant(name.first);
+            emitByte(Opcode::OP_SET_GLOBAL);
+            emitByte(static_cast<uint8_t>(varIdx));
+        }
+        return;
+    }
+    
+    if (!stmt->namespaceImport.empty()) {
+        int varIdx = chunk.findOrAddStringConstant(stmt->namespaceImport);
+        emitByte(Opcode::OP_SET_GLOBAL);
+        emitByte(static_cast<uint8_t>(varIdx));
+        return;
+    }
+    
     if (!stmt->defaultImport.empty()) {
         int varIdx = chunk.findOrAddStringConstant(stmt->defaultImport);
         emitByte(Opcode::OP_SET_GLOBAL);
         emitByte(static_cast<uint8_t>(varIdx));
+        return;
     }
     
-    // For named imports, duplicate and set each one
-    for (size_t i = 0; i < stmt->namedImports.size(); i++) {
-        if (i > 0) {
-            emitByte(Opcode::OP_DUP);  // Duplicate for subsequent imports
-        }
-        int varIdx = chunk.findOrAddStringConstant(stmt->namedImports[i].first);
-        emitByte(Opcode::OP_SET_GLOBAL);
-        emitByte(static_cast<uint8_t>(varIdx));
-    }
-    
-    // For namespace import, set the namespace variable
-    if (!stmt->namespaceImport.empty()) {
-        if (!stmt->namedImports.empty() || !stmt->defaultImport.empty()) {
-            emitByte(Opcode::OP_DUP);  // Duplicate for namespace import
-        }
-        int varIdx = chunk.findOrAddStringConstant(stmt->namespaceImport);
-        emitByte(Opcode::OP_SET_GLOBAL);
-        emitByte(static_cast<uint8_t>(varIdx));
-    }
-    
-    // For shorthand import, set the auto-generated variable
     if (shorthandImport && !varName.empty()) {
         int varIdx = chunk.findOrAddStringConstant(varName);
         emitByte(Opcode::OP_SET_GLOBAL);
