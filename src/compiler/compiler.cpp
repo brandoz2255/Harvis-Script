@@ -1,4 +1,5 @@
 #include "compiler.h"
+#include "../vm/object.h"
 #include <cstdio>
 
 namespace hs {
@@ -12,6 +13,7 @@ void Compiler::compile(Program& program) {
     for (const auto& stmt : program.statements) {
         stmt->accept(*this);
     }
+    emitByte(Opcode::OP_DEFERRED_RETURN);
     emitReturn();
 }
 
@@ -67,6 +69,17 @@ int Compiler::resolveLocal(const std::string& name, bool errorIfNotFound) {
     return -1;
 }
 
+int Compiler::resolveLocalDepth(const std::string& name) {
+    for (int i = static_cast<int>(scopes.size()) - 1; i >= 0; i--) {
+        for (const auto& s : scopes[i]) {
+            if (s.name == name) {
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
 void Compiler::emitByte(Opcode op) {
     chunk.write(static_cast<uint8_t>(op), 0);
 }
@@ -87,12 +100,45 @@ void Compiler::emitJump(Opcode op, int& jumpOffset) {
     jumpOffset = static_cast<int>(chunk.code.size()) - 2;
 }
 
+void Compiler::emitJumpToLoopEnd(int& jumpOffset) {
+    if (loopDepth >= 0) {
+        emitJump(Opcode::OP_JUMP, jumpOffset);
+        loopEndJumps.push_back(jumpOffset);
+    }
+}
+
+void Compiler::patchLoopEnd(int jumpOffset, int target) {
+     int offset = target - (jumpOffset + 2);
+     chunk.code[jumpOffset] = static_cast<uint8_t>(offset);
+     chunk.code[jumpOffset + 1] = static_cast<uint8_t>(offset >> 8);
+ }
+ 
+ void Compiler::patchJump(int jumpOffset, int target) {
+     int offset = target - (jumpOffset + 2);
+     chunk.code[jumpOffset] = static_cast<uint8_t>(offset);
+     chunk.code[jumpOffset + 1] = static_cast<uint8_t>(offset >> 8);
+ }
+
+void Compiler::enterLoop() {
+    loopDepth++;
+}
+
+void Compiler::exitLoop() {
+    loopDepth--;
+}
+
 void Compiler::emitReturn() {
     emitByte(Opcode::OP_RETURN);
 }
 
 void Compiler::emitCall(int argCount) {
     emitBytes(Opcode::OP_CALL, static_cast<uint8_t>(argCount));
+}
+
+int Compiler::makeConstant(Value value) {
+    int index = static_cast<int>(chunk.constants.size());
+    chunk.constants.push_back(std::move(value));
+    return index;
 }
 
 void Compiler::emitConstant(Value value) {
@@ -134,54 +180,61 @@ void Compiler::visitIdentifierExpr(IdentifierExpr* expr) {
     if (slot >= 0) {
         emitGetLocal(slot);
     } else {
-        int constantIndex = chunk.addStringConstant(expr->name);
+        int constantIndex = chunk.findOrAddStringConstant(expr->name);
         emitByte(Opcode::OP_GET_GLOBAL);
         emitByte(static_cast<uint8_t>(constantIndex));
     }
 }
 
 void Compiler::visitBinaryExpr(BinaryExpr* expr) {
-    expr->left->accept(*this);
-    expr->right->accept(*this);
-    
-    switch (expr->op) {
-        case BinaryOp::PLUS: emitByte(Opcode::OP_ADD); break;
-        case BinaryOp::MINUS: emitByte(Opcode::OP_SUBTRACT); break;
-        case BinaryOp::STAR: emitByte(Opcode::OP_MULTIPLY); break;
-        case BinaryOp::SLASH: emitByte(Opcode::OP_DIVIDE); break;
-        case BinaryOp::PERCENT: emitByte(Opcode::OP_MODULO); break;
-        case BinaryOp::EQUAL_EQUAL: emitByte(Opcode::OP_EQUAL); break;
-        case BinaryOp::BANG_EQUAL: emitByte(Opcode::OP_NOT_EQUAL); break;
-        case BinaryOp::LESS: emitByte(Opcode::OP_LESS); break;
-        case BinaryOp::LESS_EQUAL: emitByte(Opcode::OP_LESS_EQUAL); break;
-        case BinaryOp::GREATER: emitByte(Opcode::OP_GREATER); break;
-        case BinaryOp::GREATER_EQUAL: emitByte(Opcode::OP_GREATER_EQUAL); break;
-        default: break;
-    }
-}
+     if (expr->op != BinaryOp::NULLISH_COALESCE) {
+         expr->left->accept(*this);
+         expr->right->accept(*this);
+     }
+     
+     switch (expr->op) {
+         case BinaryOp::PLUS: emitByte(Opcode::OP_ADD); break;
+         case BinaryOp::MINUS: emitByte(Opcode::OP_SUBTRACT); break;
+         case BinaryOp::STAR: emitByte(Opcode::OP_MULTIPLY); break;
+         case BinaryOp::SLASH: emitByte(Opcode::OP_DIVIDE); break;
+         case BinaryOp::PERCENT: emitByte(Opcode::OP_MODULO); break;
+         case BinaryOp::EQUAL_EQUAL: emitByte(Opcode::OP_EQUAL); break;
+         case BinaryOp::BANG_EQUAL: emitByte(Opcode::OP_NOT_EQUAL); break;
+         case BinaryOp::LESS: emitByte(Opcode::OP_LESS); break;
+         case BinaryOp::LESS_EQUAL: emitByte(Opcode::OP_LESS_EQUAL); break;
+         case BinaryOp::GREATER: emitByte(Opcode::OP_GREATER); break;
+         case BinaryOp::GREATER_EQUAL: emitByte(Opcode::OP_GREATER_EQUAL); break;
+         case BinaryOp::AMPERSAND: emitByte(Opcode::OP_BITWISE_AND); break;
+         case BinaryOp::PIPE: emitByte(Opcode::OP_BITWISE_OR); break;
+         case BinaryOp::CARET: emitByte(Opcode::OP_BITWISE_XOR); break;
+         case BinaryOp::LESS_LESS: emitByte(Opcode::OP_SHIFT_LEFT); break;
+         case BinaryOp::GREATER_GREATER: emitByte(Opcode::OP_SHIFT_RIGHT); break;
+         case BinaryOp::NULLISH_COALESCE: {
+              // a ?? b: if a is not null/undefined, return a; otherwise return b
+              expr->left->accept(*this);
+              expr->right->accept(*this);
+              // Stack: left, right
+              // OP_NULLISH_COALESCE: pop both, push left if not null, else push right
+              emitByte(Opcode::OP_NULLISH_COALESCE);
+              break;
+          }
+         default: break;
+     }
+ }
 
 void Compiler::visitUnaryExpr(UnaryExpr* expr) {
     expr->operand->accept(*this);
     
-    switch (expr->op) {
+      switch (expr->op) {
         case UnaryOp::MINUS: emitByte(Opcode::OP_NEGATE); break;
         case UnaryOp::BANG: emitByte(Opcode::OP_NOT); break;
+        case UnaryOp::TILDE: emitByte(Opcode::OP_BITWISE_NOT); break;
         default: break;
     }
 }
 
 void Compiler::visitGroupingExpr(GroupingExpr* expr) {
     expr->expression->accept(*this);
-}
-
-void Compiler::visitCallExpr(CallExpr* expr) {
-    expr->callee->accept(*this);
-    int argCount = 0;
-    for (const auto& arg : expr->arguments) {
-        arg->accept(*this);
-        argCount++;
-    }
-    emitCall(argCount);
 }
 
 void Compiler::visitArrayLiteralExpr(ArrayLiteralExpr* expr) {
@@ -204,26 +257,37 @@ void Compiler::visitObjectLiteralExpr(ObjectLiteralExpr* expr) {
 }
 
 void Compiler::visitIndexExpr(IndexExpr* expr) {
-    expr->object->accept(*this);
-    expr->index->accept(*this);
-    emitByte(Opcode::OP_GET_INDEX);
-}
+     expr->object->accept(*this);
+     expr->index->accept(*this);
+     if (expr->optional) {
+         emitByte(Opcode::OP_GET_INDEX_OPTIONAL);
+     } else {
+         emitByte(Opcode::OP_GET_INDEX);
+     }
+ }
 
-void Compiler::visitDotExpr(DotExpr* expr) {
-    expr->object->accept(*this);
-    chunk.writeString(expr->property, 0);
-    emitByte(Opcode::OP_GET_PROPERTY);
-}
+ void Compiler::visitDotExpr(DotExpr* expr) {
+     expr->object->accept(*this);
+     int nameIndex = chunk.findOrAddStringConstant(expr->property);
+     if (expr->optional) {
+         emitByte(Opcode::OP_GET_FIELD_OPTIONAL);
+         emitByte(static_cast<uint8_t>(nameIndex));
+     } else {
+         emitByte(Opcode::OP_GET_FIELD);
+         emitByte(static_cast<uint8_t>(nameIndex));
+     }
+ }
 
 void Compiler::visitAssignExpr(AssignExpr* expr) {
     if (auto ident = std::dynamic_pointer_cast<IdentifierExpr>(expr->target)) {
         int slot = resolveLocal(ident->name, false);
         expr->value->accept(*this);
-        if (slot > 0) {
+        if (slot >= 0) {
             emitSetLocal(slot);
         } else {
+            int constantIndex = chunk.findOrAddStringConstant(ident->name);
             emitByte(Opcode::OP_SET_GLOBAL);
-            chunk.writeString(ident->name, 0);
+            emitByte(static_cast<uint8_t>(constantIndex));
         }
     } else if (auto dot = std::dynamic_pointer_cast<DotExpr>(expr->target)) {
         dot->object->accept(*this);
@@ -243,20 +307,12 @@ void Compiler::visitLogicalExpr(LogicalExpr* expr) {
         expr->left->accept(*this);
         int jumpIfFalse = -1;
         emitJump(Opcode::OP_JUMP_IF_FALSE, jumpIfFalse);
-        chunk.code.pop_back(); chunk.code.pop_back();
         emitByte(Opcode::OP_POP);
         expr->right->accept(*this);
-        int jumpBack = -1;
-        emitJump(Opcode::OP_JUMP, jumpBack);
-        // Patch forward jump
-        int current = static_cast<int>(chunk.code.size());
-        (void)current;
-        // This is a simplified version
     } else {
         expr->left->accept(*this);
         int jumpIfTrue = -1;
         emitJump(Opcode::OP_JUMP_IF_TRUE, jumpIfTrue);
-        chunk.code.pop_back(); chunk.code.pop_back();
         emitByte(Opcode::OP_POP);
         expr->right->accept(*this);
     }
@@ -266,24 +322,43 @@ void Compiler::visitTernaryExpr(TernaryExpr* expr) {
     expr->condition->accept(*this);
     int jumpIfFalse = -1;
     emitJump(Opcode::OP_JUMP_IF_FALSE, jumpIfFalse);
-    chunk.code.pop_back(); chunk.code.pop_back();
     expr->thenExpr->accept(*this);
     int jumpEnd = -1;
     emitJump(Opcode::OP_JUMP, jumpEnd);
-    chunk.code.pop_back(); chunk.code.pop_back();
-    // Patch forward
     int falseOffset = static_cast<int>(chunk.code.size()) - jumpIfFalse - 1;
     chunk.code[jumpIfFalse] = static_cast<uint8_t>(falseOffset);
+    chunk.code[jumpIfFalse + 1] = static_cast<uint8_t>(falseOffset >> 8);
     expr->elseExpr->accept(*this);
-    // Patch end jump
     int endOffset = static_cast<int>(chunk.code.size()) - jumpEnd - 1;
     chunk.code[jumpEnd] = static_cast<uint8_t>(endOffset);
+    chunk.code[jumpEnd + 1] = static_cast<uint8_t>(endOffset >> 8);
 }
 
 void Compiler::visitLambdaExpr(LambdaExpr* expr) {
-    (void)expr;
-    // Simplified: just emit a placeholder
-    emitByte(Opcode::OP_NOP);
+    Compiler bodyCompiler;
+    bodyCompiler.beginScope();
+    
+    for (const auto& param : expr->parameters) {
+        bodyCompiler.declareVariable(param.first);
+    }
+    
+    if (expr->body) {
+        expr->body->accept(bodyCompiler);
+    }
+    for (const auto& blkStmt : expr->block) {
+        blkStmt->accept(bodyCompiler);
+    }
+    bodyCompiler.endScope();
+    
+    Function* func = new Function(expr->name, bodyCompiler.chunk, 
+                                  static_cast<int>(expr->parameters.size()));
+    
+    int funcIndex = static_cast<int>(chunk.constants.size());
+    chunk.constants.push_back(Value(func));
+    
+    emitByte(Opcode::OP_CLOSURE);
+    emitByte(static_cast<uint8_t>(funcIndex));
+    emitByte(0);
 }
 
 void Compiler::visitNewExpr(NewExpr* expr) {
@@ -315,7 +390,9 @@ void Compiler::visitTypeCastExpr(TypeCastExpr* expr) {
 
 void Compiler::visitExpressionStmt(ExpressionStmt* stmt) {
     stmt->expression->accept(*this);
-    emitByte(Opcode::OP_POP);
+    if (!std::dynamic_pointer_cast<AssignExpr>(stmt->expression)) {
+        emitByte(Opcode::OP_POP);
+    }
 }
 
 void Compiler::visitBlockStmt(BlockStmt* stmt) {
@@ -330,43 +407,53 @@ void Compiler::visitIfStmt(IfStmt* stmt) {
     stmt->condition->accept(*this);
     int jumpIfFalse = -1;
     emitJump(Opcode::OP_JUMP_IF_FALSE, jumpIfFalse);
-    chunk.code.pop_back(); chunk.code.pop_back();
     stmt->thenBranch->accept(*this);
     int jumpEnd = -1;
     emitJump(Opcode::OP_JUMP, jumpEnd);
-    chunk.code.pop_back(); chunk.code.pop_back();
     
     // Patch forward
     int falseOffset = static_cast<int>(chunk.code.size()) - jumpIfFalse - 1;
     chunk.code[jumpIfFalse] = static_cast<uint8_t>(falseOffset);
-    
-    if (stmt->elseBranch) {
-        stmt->elseBranch->accept(*this);
-    }
+    chunk.code[jumpIfFalse + 1] = static_cast<uint8_t>(falseOffset >> 8);
     
     // Patch end jump
     int endOffset = static_cast<int>(chunk.code.size()) - jumpEnd - 1;
     chunk.code[jumpEnd] = static_cast<uint8_t>(endOffset);
+    chunk.code[jumpEnd + 1] = static_cast<uint8_t>(endOffset >> 8);
 }
 
 void Compiler::visitWhileStmt(WhileStmt* stmt) {
     int loopStart = static_cast<int>(chunk.code.size());
+    int savedLoopDepth = loopDepth;
+    enterLoop();
+    
     stmt->condition->accept(*this);
     int endJump = -1;
     emitJump(Opcode::OP_JUMP_IF_FALSE, endJump);
-    chunk.code.pop_back(); chunk.code.pop_back();
     stmt->body->accept(*this);
     emitJump(Opcode::OP_LOOP, loopStart);
-    chunk.code[loopStart + 1] = static_cast<uint8_t>(chunk.code.size());
-    chunk.code[loopStart + 2] = static_cast<uint8_t>(chunk.code.size() >> 8);
     
-    int endOffset = static_cast<int>(chunk.code.size()) - endJump - 1;
+    // Patch all loop end jumps (break)
+    for (auto& jumpOff : loopEndJumps) {
+        int offset = loopStart - (jumpOff + 2);
+        chunk.code[jumpOff] = static_cast<uint8_t>(offset);
+        chunk.code[jumpOff + 1] = static_cast<uint8_t>(offset >> 8);
+    }
+    loopEndJumps.clear();
+    
+    // Patch end jump
+    int endOffset = static_cast<int>(chunk.code.size()) - endJump - 2;
     chunk.code[endJump] = static_cast<uint8_t>(endOffset);
     chunk.code[endJump + 1] = static_cast<uint8_t>(endOffset >> 8);
+    
+    loopDepth = savedLoopDepth;
+    exitLoop();
 }
 
 void Compiler::visitForStmt(ForStmt* stmt) {
     int loopStart = static_cast<int>(chunk.code.size());
+    int savedLoopDepth = loopDepth;
+    enterLoop();
     
     // Init
     if (std::holds_alternative<Expr::Ptr>(stmt->init)) {
@@ -386,7 +473,6 @@ void Compiler::visitForStmt(ForStmt* stmt) {
     }
     int endJump = -1;
     emitJump(Opcode::OP_JUMP_IF_FALSE, endJump);
-    chunk.code.pop_back(); chunk.code.pop_back();
     
     // Body
     stmt->body->accept(*this);
@@ -400,24 +486,49 @@ void Compiler::visitForStmt(ForStmt* stmt) {
     // Loop back
     emitJump(Opcode::OP_LOOP, loopStart);
     
+    // Patch all loop end jumps (break)
+    for (auto& jumpOff : loopEndJumps) {
+        int offset = loopStart - (jumpOff + 2);
+        chunk.code[jumpOff] = static_cast<uint8_t>(offset);
+        chunk.code[jumpOff + 1] = static_cast<uint8_t>(offset >> 8);
+    }
+    loopEndJumps.clear();
+    
     // Patch end jump
-    int endOffset = static_cast<int>(chunk.code.size()) - endJump - 1;
+    int endOffset = static_cast<int>(chunk.code.size()) - endJump - 2;
     chunk.code[endJump] = static_cast<uint8_t>(endOffset);
     chunk.code[endJump + 1] = static_cast<uint8_t>(endOffset >> 8);
+    
+    loopDepth = savedLoopDepth;
+    exitLoop();
 }
 
 void Compiler::visitDoWhileStmt(DoWhileStmt* stmt) {
     int loopStart = static_cast<int>(chunk.code.size());
+    int savedLoopDepth = loopDepth;
+    enterLoop();
+    
     stmt->body->accept(*this);
     stmt->condition->accept(*this);
     int endJump = -1;
     emitJump(Opcode::OP_JUMP_IF_FALSE, endJump);
-    chunk.code.pop_back(); chunk.code.pop_back();
     emitJump(Opcode::OP_LOOP, loopStart);
     
-    int endOffset = static_cast<int>(chunk.code.size()) - endJump - 1;
+    // Patch all loop end jumps (break)
+    for (auto& jumpOff : loopEndJumps) {
+        int offset = loopStart - (jumpOff + 2);
+        chunk.code[jumpOff] = static_cast<uint8_t>(offset);
+        chunk.code[jumpOff + 1] = static_cast<uint8_t>(offset >> 8);
+    }
+    loopEndJumps.clear();
+    
+    // Patch end jump
+    int endOffset = static_cast<int>(chunk.code.size()) - endJump - 2;
     chunk.code[endJump] = static_cast<uint8_t>(endOffset);
     chunk.code[endJump + 1] = static_cast<uint8_t>(endOffset >> 8);
+    
+    loopDepth = savedLoopDepth;
+    exitLoop();
 }
 
 void Compiler::visitReturnStmt(ReturnStmt* stmt) {
@@ -431,18 +542,24 @@ void Compiler::visitReturnStmt(ReturnStmt* stmt) {
 
 void Compiler::visitBreakStmt(BreakStmt* stmt) {
     (void)stmt;
-    emitByte(Opcode::OP_NOP);  // Placeholder - needs proper loop tracking
+    if (loopDepth < 0) {
+        reportError(stmt->location, "break outside of loop");
+        return;
+    }
+    int jumpOffset = -1;
+    emitJump(Opcode::OP_JUMP, jumpOffset);
+    loopEndJumps.push_back(jumpOffset);
 }
 
 void Compiler::visitContinueStmt(ContinueStmt* stmt) {
     (void)stmt;
-    emitByte(Opcode::OP_NOP);  // Placeholder
-}
-
-void Compiler::visitFunctionStmt(FunctionStmt* stmt) {
-    // Simplified function compilation
-    declareVariable(stmt->name);
-    emitByte(Opcode::OP_NOP);  // Placeholder for function definition
+    if (loopDepth < 0) {
+        reportError(stmt->location, "continue outside of loop");
+        return;
+    }
+    int jumpOffset = -1;
+    emitJump(Opcode::OP_JUMP, jumpOffset);
+    loopEndJumps.push_back(jumpOffset);
 }
 
 void Compiler::visitClassStmt(ClassStmt* stmt) {
@@ -478,13 +595,87 @@ void Compiler::visitConstDeclStmt(ConstDeclStmt* stmt) {
 }
 
 void Compiler::visitImportStmt(ImportStmt* stmt) {
-    (void)stmt;
-    emitByte(Opcode::OP_NOP);
+    // Push module name as string constant
+    int modIdx = chunk.findOrAddStringConstant(stmt->moduleName);
+    emitByte(Opcode::OP_CONST_STRING);
+    emitByte(static_cast<uint8_t>(modIdx));
+    
+    // Emit OP_IMPORT to load the module
+    emitByte(Opcode::OP_IMPORT);
+    
+    // For default imports, set the variable
+    if (!stmt->defaultImport.empty()) {
+        int varIdx = chunk.findOrAddStringConstant(stmt->defaultImport);
+        emitByte(Opcode::OP_SET_GLOBAL);
+        emitByte(static_cast<uint8_t>(varIdx));
+    }
+    
+    // For named imports, duplicate and set each one
+    for (size_t i = 0; i < stmt->namedImports.size(); i++) {
+        if (i > 0) {
+            emitByte(Opcode::OP_DUP);  // Duplicate for subsequent imports
+        }
+        int varIdx = chunk.findOrAddStringConstant(stmt->namedImports[i].first);
+        emitByte(Opcode::OP_SET_GLOBAL);
+        emitByte(static_cast<uint8_t>(varIdx));
+    }
+    
+    // For namespace import, set the namespace variable
+    if (!stmt->namespaceImport.empty()) {
+        if (!stmt->namedImports.empty() || !stmt->defaultImport.empty()) {
+            emitByte(Opcode::OP_DUP);  // Duplicate for namespace import
+        }
+        int varIdx = chunk.findOrAddStringConstant(stmt->namespaceImport);
+        emitByte(Opcode::OP_SET_GLOBAL);
+        emitByte(static_cast<uint8_t>(varIdx));
+    }
 }
 
 void Compiler::visitExportStmt(ExportStmt* stmt) {
-    (void)stmt;
-    emitByte(Opcode::OP_NOP);
+    // Handle named exports with 'from' clause
+    if (!stmt->namedExports.empty()) {
+        if (!stmt->exportAllFrom.empty()) {
+            // Re-export from another module
+            int modIdx = chunk.findOrAddStringConstant(stmt->exportAllFrom);
+            emitByte(Opcode::OP_CONST_STRING);
+            emitByte(static_cast<uint8_t>(modIdx));
+            emitByte(Opcode::OP_IMPORT);
+        }
+        // Mark exports
+        for (const auto& name : stmt->namedExports) {
+            int nameIdx = chunk.findOrAddStringConstant(name);
+            emitByte(Opcode::OP_EXPORT);
+            emitByte(static_cast<uint8_t>(nameIdx));
+        }
+        return;
+    }
+    
+    // Handle declaration exports
+    bool hasDecl = false;
+    std::visit([&hasDecl](const auto& arg) {
+        hasDecl = arg != nullptr;
+    }, stmt->declaration);
+    
+    if (hasDecl) {
+        std::visit([this](const auto& arg) {
+            if (arg) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(arg)>, Expr::Ptr>) {
+                    arg->accept(*this);
+                } else if constexpr (std::is_same_v<std::decay_t<decltype(arg)>, std::shared_ptr<FunctionStmt>>) {
+                    arg->accept(*this);
+                } else if constexpr (std::is_same_v<std::decay_t<decltype(arg)>, std::shared_ptr<ClassStmt>>) {
+                    arg->accept(*this);
+                } else if constexpr (std::is_same_v<std::decay_t<decltype(arg)>, std::shared_ptr<VarDeclStmt>>) {
+                    arg->accept(*this);
+                }
+            }
+        }, stmt->declaration);
+    }
+    
+    // Mark as exported
+    if (!stmt->isDefault) {
+        emitByte(Opcode::OP_EXPORT);
+    }
 }
 
 void Compiler::visitTryStmt(TryStmt* stmt) {
@@ -504,10 +695,517 @@ void Compiler::visitThrowStmt(ThrowStmt* stmt) {
     emitByte(Opcode::OP_THROW);
 }
 
-void Compiler::visitSwitchStmt(SwitchStmt* stmt) {
+ void Compiler::visitSwitchStmt(SwitchStmt* stmt) {
+    int savedLoopDepth = loopDepth;
+    enterLoop();
+    
     stmt->expression->accept(*this);
-    // Simplified switch - just NOP for now
-    emitByte(Opcode::OP_NOP);
+    
+    std::vector<int> caseOffsets;
+    int defaultJumpOffset = -1;
+    int switchEndJumpOffset = -1;
+    
+    for (int i = 0; i < static_cast<int>(stmt->cases.size()); i++) {
+        auto& caseStmt = stmt->cases[i];
+        
+        if (caseStmt.condition) {
+            caseStmt.condition->accept(*this);
+            emitByte(Opcode::OP_EQUAL);
+            int jumpOffset = -1;
+            emitJump(Opcode::OP_JUMP_IF_TRUE, jumpOffset);
+            caseOffsets.push_back(jumpOffset);
+        } else {
+            defaultJumpOffset = static_cast<int>(chunk.code.size());
+            emitByte(Opcode::OP_CONST_TRUE);
+            int jumpOffset = -1;
+            emitJump(Opcode::OP_JUMP_IF_TRUE, jumpOffset);
+            caseOffsets.push_back(jumpOffset);
+        }
+        
+        // Emit case body
+        for (const auto& s : caseStmt.statements) {
+            s->accept(*this);
+        }
+        
+        if (i < static_cast<int>(stmt->cases.size()) - 1) {
+            int jumpToEnd = -1;
+            emitJump(Opcode::OP_JUMP, jumpToEnd);
+            caseOffsets.push_back(jumpToEnd);
+        }
+    }
+    
+    switchEndJumpOffset = static_cast<int>(chunk.code.size());
+    
+    // Patch all case jumps
+    for (int i = 0; i < static_cast<int>(caseOffsets.size()); i++) {
+        int caseTarget = 0;
+        if (i < static_cast<int>(caseOffsets.size()) - 1) {
+            caseTarget = caseOffsets[i] + 2;
+        } else {
+            caseTarget = switchEndJumpOffset;
+        }
+        int offset = caseTarget - (caseOffsets[i] + 2);
+        chunk.code[caseOffsets[i]] = static_cast<uint8_t>(offset);
+        chunk.code[caseOffsets[i] + 1] = static_cast<uint8_t>(offset >> 8);
+    }
+    
+    // Patch break jumps
+    for (auto& jumpOff : loopEndJumps) {
+        int offset = switchEndJumpOffset - (jumpOff + 2);
+        chunk.code[jumpOff] = static_cast<uint8_t>(offset);
+        chunk.code[jumpOff + 1] = static_cast<uint8_t>(offset >> 8);
+    }
+    loopEndJumps.clear();
+    
+    loopDepth = savedLoopDepth;
+    exitLoop();
+}
+
+void Compiler::visitDeferStmt(DeferStmt* stmt) {
+    Compiler bodyCompiler;
+    bodyCompiler.beginScope();
+    stmt->expression->accept(bodyCompiler);
+    bodyCompiler.emitReturn();
+    bodyCompiler.endScope();
+    
+    Function* func = new Function("defer", bodyCompiler.chunk, 0);
+    int funcIndex = static_cast<int>(chunk.constants.size());
+    chunk.constants.push_back(Value(func));
+    
+    emitByte(Opcode::OP_CLOSURE);
+    emitByte(static_cast<uint8_t>(funcIndex));
+    emitByte(0);
+    
+    emitByte(Opcode::OP_DEFER);
+}
+
+void Compiler::visitInterfaceDeclStmt(InterfaceDeclStmt* stmt) {
+    declareVariable(stmt->name);
+    // Interfaces are compile-time only, no bytecode emitted
+}
+
+void Compiler::visitPanicExpr(PanicExpr* expr) {
+    expr->value->accept(*this);
+    emitByte(Opcode::OP_PANIC);
+}
+
+void Compiler::visitRecoverExpr(RecoverExpr* expr) {
+    (void)expr;
+    emitByte(Opcode::OP_RECOVER);
+}
+
+void Compiler::visitChannelExpr(ChannelExpr* expr) {
+    if (expr->capacity) {
+        expr->capacity->accept(*this);
+    } else {
+        emitByte(Opcode::OP_CONST_NUMBER);
+        emitByte(0);
+    }
+    emitByte(Opcode::OP_MAKE_CHANNEL);
+}
+
+void Compiler::visitSendExpr(SendExpr* expr) {
+    expr->channel->accept(*this);
+    expr->value->accept(*this);
+    emitByte(Opcode::OP_SEND);
+}
+
+void Compiler::visitReceiveExpr(ReceiveExpr* expr) {
+    expr->channel->accept(*this);
+    emitByte(Opcode::OP_RECEIVE);
+}
+
+void Compiler::visitMutexExpr(MutexExpr* expr) {
+    (void)expr;
+    emitByte(Opcode::OP_MUTEX_NEW);
+}
+
+void Compiler::visitWaitGroupExpr(WaitGroupExpr* expr) {
+    (void)expr;
+    emitByte(Opcode::OP_WAITGROUP_NEW);
+}
+
+void Compiler::visitGoStmt(GoStmt* stmt) {
+    stmt->function->accept(*this);
+    int argCount = 0;
+    for (const auto& arg : stmt->args) {
+        arg->accept(*this);
+        argCount++;
+    }
+    emitBytes(Opcode::OP_GO, static_cast<uint8_t>(argCount));
+}
+
+void Compiler::visitSelectStmt(SelectStmt* stmt) {
+    int caseCount = static_cast<int>(stmt->cases.size());
+    
+    for (int i = 0; i < caseCount; i++) {
+        auto& caseStmt = stmt->cases[i];
+        
+        if (caseStmt.isDefault) {
+            emitByte(Opcode::OP_SELECT_DEFAULT);
+            for (const auto& bodyStmt : caseStmt.body) {
+                bodyStmt->accept(*this);
+            }
+            emitByte(Opcode::OP_SELECT_CASE_END);
+        } else {
+            emitByte(Opcode::OP_SELECT_CASE);
+            emitByte(static_cast<uint8_t>(caseStmt.isSend ? 1 : 0));
+            
+            if (caseStmt.isSend) {
+                caseStmt.channel->accept(*this);
+                caseStmt.value->accept(*this);
+            } else {
+                caseStmt.channel->accept(*this);
+                if (caseStmt.value) {
+                    emitByte(Opcode::OP_CONST_UNDEFINED);
+                }
+            }
+            
+            for (const auto& bodyStmt : caseStmt.body) {
+                bodyStmt->accept(*this);
+            }
+            emitByte(Opcode::OP_SELECT_CASE_END);
+        }
+    }
+    
+    emitBytes(Opcode::OP_SELECT, static_cast<uint8_t>(caseCount));
+}
+
+void Compiler::pushTypeParams(const std::vector<std::string>& params) {
+    std::unordered_map<std::string, Type> bindings;
+    for (const auto& param : params) {
+        bindings[param] = Type::undefined();
+    }
+    typeParamBindings.push_back(std::move(bindings));
+}
+
+void Compiler::popTypeParams() {
+    if (!typeParamBindings.empty()) {
+        typeParamBindings.pop_back();
+    }
+}
+
+std::string Compiler::resolveTypeParam(const std::string& name) {
+    for (int i = static_cast<int>(typeParamBindings.size()) - 1; i >= 0; i--) {
+        auto it = typeParamBindings[i].find(name);
+        if (it != typeParamBindings[i].end()) {
+            return name; // Type param name itself is used as placeholder
+        }
+    }
+    return "";
+}
+
+std::string Compiler::mangleTypeName(const std::string& base, const std::vector<Type>& args) {
+    if (args.empty()) return base;
+    std::string mangled = base;
+    for (const auto& arg : args) {
+        if (!arg.name.has_value()) {
+            reportError({{}, 0, 0}, "Generic type argument has no name.");
+            return base;
+        }
+        mangled += "_" + arg.name.value();
+    }
+    return mangled;
+}
+
+void Compiler::visitStructDeclStmt(StructDeclStmt* stmt) {
+    declareVariable(stmt->name);
+    pushTypeParams(stmt->typeParams);
+    // Structs are compile-time only, no bytecode emitted
+    popTypeParams();
+}
+
+void Compiler::visitStructInstantiationExpr(StructInstantiationExpr* expr) {
+    std::string structName = expr->name;
+    if (!expr->typeArgs.empty()) {
+        structName = mangleTypeName(expr->name, expr->typeArgs);
+    }
+    
+    std::vector<int> fieldNameIndices;
+    
+    for (const auto& field : expr->fields) {
+        field.value->accept(*this);
+        fieldNameIndices.push_back(chunk.findOrAddStringConstant(field.name));
+    }
+    
+    int nameIndex = chunk.findOrAddStringConstant(structName);
+    emitByte(Opcode::OP_NEW_STRUCT);
+    emitByte(static_cast<uint8_t>(nameIndex));
+    emitByte(static_cast<uint8_t>(fieldNameIndices.size()));
+    
+    for (int i = static_cast<int>(fieldNameIndices.size()) - 1; i >= 0; i--) {
+        emitByte(static_cast<uint8_t>(fieldNameIndices[i]));
+    }
+}
+
+void Compiler::visitCallExpr(CallExpr* expr) {
+    // Check for built-in functions
+    if (auto ident = std::dynamic_pointer_cast<IdentifierExpr>(expr->callee)) {
+        if (ident->name == "len") {
+            for (const auto& arg : expr->arguments) {
+                arg->accept(*this);
+            }
+            emitByte(Opcode::OP_LEN);
+            return;
+        } else if (ident->name == "make") {
+            // make(type, capacity) — first arg is type name
+            if (!expr->arguments.empty()) {
+                // Get type name from first argument
+                std::string typeName;
+                if (auto identArg = std::dynamic_pointer_cast<IdentifierExpr>(expr->arguments[0])) {
+                    typeName = identArg->name;
+                } else if (auto literalArg = std::dynamic_pointer_cast<LiteralExpr>(expr->arguments[0])) {
+                    typeName = literalArg->value.toString();
+                } else if (std::dynamic_pointer_cast<ChannelExpr>(expr->arguments[0])) {
+                    typeName = "channel";
+                }
+                
+                // Push type name as string constant
+                int typeIdx = chunk.findOrAddStringConstant(typeName);
+                emitByte(Opcode::OP_CONST_STRING);
+                emitByte(static_cast<uint8_t>(typeIdx));
+                
+                // Push remaining args (capacity, length)
+                for (size_t i = 1; i < expr->arguments.size(); i++) {
+                    expr->arguments[i]->accept(*this);
+                }
+            }
+            emitByte(Opcode::OP_MAKE);
+            return;
+        } else if (ident->name == "append") {
+            for (const auto& arg : expr->arguments) {
+                arg->accept(*this);
+            }
+            emitByte(Opcode::OP_APPEND);
+            return;
+        } else if (ident->name == "copy") {
+            for (const auto& arg : expr->arguments) {
+                arg->accept(*this);
+            }
+            emitByte(Opcode::OP_COPY);
+            return;
+        } else if (ident->name == "delete") {
+            for (const auto& arg : expr->arguments) {
+                arg->accept(*this);
+            }
+            emitByte(Opcode::OP_DELETE);
+            return;
+        }
+    }
+    
+    // Regular function call
+    expr->callee->accept(*this);
+    int argCount = 0;
+    for (const auto& arg : expr->arguments) {
+        arg->accept(*this);
+        argCount++;
+    }
+    emitCall(argCount);
+}
+
+void Compiler::visitFunctionStmt(FunctionStmt* stmt) {
+    declareVariable(stmt->name);
+    
+    Compiler bodyCompiler;
+    bodyCompiler.beginScope();
+    
+    if (!stmt->typeParams.empty()) {
+        bodyCompiler.pushTypeParams(stmt->typeParams);
+    }
+    
+    for (const auto& param : stmt->parameters) {
+        bodyCompiler.declareVariable(param.first);
+    }
+    
+    for (const auto& bodyStmt : stmt->body) {
+        bodyStmt->accept(bodyCompiler);
+    }
+    bodyCompiler.endScope();
+    
+    Function* func = new Function(stmt->name, bodyCompiler.chunk, 
+                                  static_cast<int>(stmt->parameters.size()));
+    
+    int funcIndex = static_cast<int>(chunk.constants.size());
+    chunk.constants.push_back(Value(func));
+    
+    emitByte(Opcode::OP_CLOSURE);
+    emitByte(static_cast<uint8_t>(funcIndex));
+    emitByte(0);
+    
+    int slot = resolveLocal(stmt->name, false);
+    if (slot >= 0) {
+        emitSetLocal(slot);
+    } else {
+        emitByte(Opcode::OP_SET_GLOBAL);
+        chunk.writeString(stmt->name, 0);
+   }
+}
+
+void Compiler::visitTypeAssertExpr(TypeAssertExpr* expr) {
+    expr->expression->accept(*this);
+    std::string typeName = expr->type.toString();
+    int typeIdx = chunk.findOrAddStringConstant(typeName);
+    emitByte(Opcode::OP_TYPE_CHECK);
+    emitByte(static_cast<uint8_t>(typeIdx));
+}
+
+void Compiler::visitRangeStmt(RangeStmt* stmt) {
+    int savedLoopDepth = loopDepth;
+    enterLoop();
+    
+    for (auto& var : stmt->variables) {
+        declareVariable(var);
+        defineVariable(var);
+    }
+    
+    std::string tempName = "__range_iter";
+    declareVariable(tempName);
+    defineVariable(tempName);
+    
+    stmt->collection->accept(*this);
+    
+    int valueSlot = -1;
+    int indexSlot = -1;
+    if (stmt->variables.size() == 2) {
+        indexSlot = resolveLocal(stmt->variables[0], false);
+        valueSlot = resolveLocal(stmt->variables[1], false);
+    } else if (stmt->variables.size() == 1) {
+        valueSlot = resolveLocal(stmt->variables[0], false);
+    }
+    
+    int tempIdx = chunk.findOrAddStringConstant(tempName);
+    emitByte(Opcode::OP_SET_GLOBAL);
+    emitByte(static_cast<uint8_t>(tempIdx));
+    
+    int lenIdx = chunk.findOrAddStringConstant("__range_len");
+    declareVariable("__range_len");
+    defineVariable("__range_len");
+    emitByte(Opcode::OP_GET_GLOBAL);
+    emitByte(static_cast<uint8_t>(tempIdx));
+    emitByte(Opcode::OP_ARRAY_LENGTH);
+    emitByte(Opcode::OP_SET_GLOBAL);
+    emitByte(static_cast<uint8_t>(lenIdx));
+    
+    int indexVarIdx = chunk.findOrAddStringConstant("__range_idx");
+    declareVariable("__range_idx");
+    defineVariable("__range_idx");
+    emitConstant(Value(0.0));
+    emitByte(Opcode::OP_SET_GLOBAL);
+    emitByte(static_cast<uint8_t>(indexVarIdx));
+    
+    int loopStart = static_cast<int>(chunk.code.size());
+    
+    int checkPos = static_cast<int>(chunk.code.size());
+    emitByte(Opcode::OP_GET_GLOBAL);
+    emitByte(static_cast<uint8_t>(indexVarIdx));
+    emitByte(Opcode::OP_GET_GLOBAL);
+    emitByte(static_cast<uint8_t>(lenIdx));
+    emitByte(Opcode::OP_LESS);
+    
+    int endJump = -1;
+    emitJump(Opcode::OP_JUMP_IF_FALSE, endJump);
+    
+    emitByte(Opcode::OP_GET_GLOBAL);
+    emitByte(static_cast<uint8_t>(indexVarIdx));
+    emitByte(Opcode::OP_GET_GLOBAL);
+    emitByte(static_cast<uint8_t>(tempIdx));
+    emitByte(Opcode::OP_ARRAY_AT);
+    
+    if (valueSlot >= 0) {
+        emitByte(Opcode::OP_SET_LOCAL);
+        emitByte(static_cast<uint8_t>(valueSlot));
+    } else {
+        int varIdx = chunk.findOrAddStringConstant(stmt->variables[0]);
+        emitByte(Opcode::OP_SET_GLOBAL);
+        emitByte(static_cast<uint8_t>(varIdx));
+    }
+    
+    emitByte(Opcode::OP_GET_GLOBAL);
+    emitByte(static_cast<uint8_t>(indexVarIdx));
+    emitConstant(Value(1.0));
+    emitByte(Opcode::OP_ADD);
+    emitByte(Opcode::OP_SET_GLOBAL);
+    emitByte(static_cast<uint8_t>(indexVarIdx));
+    
+    stmt->body->accept(*this);
+    
+    int loopJump = -1;
+    emitJump(Opcode::OP_LOOP, loopJump);
+    
+    for (auto& jumpOff : loopEndJumps) {
+        int offset = loopStart - (jumpOff + 2);
+        chunk.code[jumpOff] = static_cast<uint8_t>(offset);
+        chunk.code[jumpOff + 1] = static_cast<uint8_t>(offset >> 8);
+    }
+    loopEndJumps.clear();
+    
+    int endOffset = static_cast<int>(chunk.code.size()) - endJump - 2;
+    chunk.code[endJump] = static_cast<uint8_t>(endOffset);
+    chunk.code[endJump + 1] = static_cast<uint8_t>(endOffset >> 8);
+    
+    int loopOffset = (loopJump + 2) - loopStart;
+    chunk.code[loopJump] = static_cast<uint8_t>(loopOffset);
+    chunk.code[loopJump + 1] = static_cast<uint8_t>(loopOffset >> 8);
+    
+    loopDepth = savedLoopDepth;
+    exitLoop();
+}
+
+void Compiler::visitTypeSwitchStmt(TypeSwitchStmt* stmt) {
+    int savedLoopDepth = loopDepth;
+    enterLoop();
+    
+    stmt->expression->accept(*this);
+    
+    std::vector<int> caseJumpOffsets;
+    int switchEndJump = -1;
+    
+    for (size_t i = 0; i < stmt->cases.size(); i++) {
+        auto& tc = stmt->cases[i];
+        std::string typeName = tc.type.toString();
+        int typeIdx = chunk.findOrAddStringConstant(typeName);
+        
+        emitByte(Opcode::OP_TYPE_CHECK);
+        emitByte(static_cast<uint8_t>(typeIdx));
+        
+        int jumpOffset = -1;
+        emitJump(Opcode::OP_JUMP_IF_TRUE, jumpOffset);
+        caseJumpOffsets.push_back(jumpOffset);
+        
+        for (const auto& s : tc.statements) {
+            s->accept(*this);
+        }
+        
+        if (i < stmt->cases.size() - 1) {
+            int jumpToEnd = -1;
+            emitJump(Opcode::OP_JUMP, jumpToEnd);
+            caseJumpOffsets.push_back(jumpToEnd);
+        }
+    }
+    
+    switchEndJump = static_cast<int>(chunk.code.size());
+    
+    for (size_t i = 0; i < caseJumpOffsets.size(); i++) {
+        int target = caseJumpOffsets[i] + 2;
+        if (i + 1 < caseJumpOffsets.size()) {
+            target = caseJumpOffsets[i + 1];
+        } else {
+            target = switchEndJump;
+        }
+        int offset = target - (caseJumpOffsets[i] + 2);
+        chunk.code[caseJumpOffsets[i]] = static_cast<uint8_t>(offset);
+        chunk.code[caseJumpOffsets[i] + 1] = static_cast<uint8_t>(offset >> 8);
+    }
+    
+    for (auto& jumpOff : loopEndJumps) {
+        int offset = switchEndJump - (jumpOff + 2);
+        chunk.code[jumpOff] = static_cast<uint8_t>(offset);
+        chunk.code[jumpOff + 1] = static_cast<uint8_t>(offset >> 8);
+    }
+    loopEndJumps.clear();
+    
+    loopDepth = savedLoopDepth;
+    exitLoop();
 }
 
 } // namespace hs
