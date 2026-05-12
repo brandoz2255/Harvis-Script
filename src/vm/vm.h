@@ -4,6 +4,7 @@
 #include "../compiler/chunk.h"
 #include "../compiler/opcode.h"
 #include "object.h"
+#include "gc.h"
 #include <vector>
 #include <memory>
 #include <stack>
@@ -31,6 +32,7 @@ private:
     std::vector<Value> stack;
     std::vector<std::shared_ptr<Upvalue>> upvalues;
     std::unordered_map<std::string, Value> globals;
+    GC gc;
     bool error;
     std::string errorMessage;
     Value lastValue;

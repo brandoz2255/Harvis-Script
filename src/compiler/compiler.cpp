@@ -1,6 +1,7 @@
 #include "compiler.h"
 #include "../vm/object.h"
 #include <cstdio>
+#include <algorithm>
 
 namespace hs {
 
@@ -325,13 +326,9 @@ void Compiler::visitTernaryExpr(TernaryExpr* expr) {
     expr->thenExpr->accept(*this);
     int jumpEnd = -1;
     emitJump(Opcode::OP_JUMP, jumpEnd);
-    int falseOffset = static_cast<int>(chunk.code.size()) - jumpIfFalse - 1;
-    chunk.code[jumpIfFalse] = static_cast<uint8_t>(falseOffset);
-    chunk.code[jumpIfFalse + 1] = static_cast<uint8_t>(falseOffset >> 8);
+    patchJump(jumpIfFalse, static_cast<int>(chunk.code.size()));
     expr->elseExpr->accept(*this);
-    int endOffset = static_cast<int>(chunk.code.size()) - jumpEnd - 1;
-    chunk.code[jumpEnd] = static_cast<uint8_t>(endOffset);
-    chunk.code[jumpEnd + 1] = static_cast<uint8_t>(endOffset >> 8);
+    patchJump(jumpEnd, static_cast<int>(chunk.code.size()));
 }
 
 void Compiler::visitLambdaExpr(LambdaExpr* expr) {
@@ -405,8 +402,9 @@ void Compiler::visitNewExpr(NewExpr* expr) {
     expr->callee->accept(*this);
     
     int nameIdx = chunk.findOrAddStringConstant("constructor");
-    emitByte(Opcode::OP_GET_PROPERTY);
+    emitByte(Opcode::OP_CONST_STRING);
     emitByte(static_cast<uint8_t>(nameIdx));
+    emitByte(Opcode::OP_GET_PROPERTY);
     
     int count = static_cast<int>(expr->arguments.size());
     for (const auto& arg : expr->arguments) {
@@ -458,15 +456,8 @@ void Compiler::visitIfStmt(IfStmt* stmt) {
     int jumpEnd = -1;
     emitJump(Opcode::OP_JUMP, jumpEnd);
     
-    // Patch forward
-    int falseOffset = static_cast<int>(chunk.code.size()) - jumpIfFalse - 1;
-    chunk.code[jumpIfFalse] = static_cast<uint8_t>(falseOffset);
-    chunk.code[jumpIfFalse + 1] = static_cast<uint8_t>(falseOffset >> 8);
-    
-    // Patch end jump
-    int endOffset = static_cast<int>(chunk.code.size()) - jumpEnd - 1;
-    chunk.code[jumpEnd] = static_cast<uint8_t>(endOffset);
-    chunk.code[jumpEnd + 1] = static_cast<uint8_t>(endOffset >> 8);
+    patchJump(jumpIfFalse, static_cast<int>(chunk.code.size()));
+    patchJump(jumpEnd, static_cast<int>(chunk.code.size()));
 }
 
 void Compiler::visitWhileStmt(WhileStmt* stmt) {
@@ -493,20 +484,24 @@ void Compiler::visitWhileStmt(WhileStmt* stmt) {
     chunk.code[endJump] = static_cast<uint8_t>(endOffset);
     chunk.code[endJump + 1] = static_cast<uint8_t>(endOffset >> 8);
     
-    loopDepth = savedLoopDepth;
-    exitLoop();
+   loopDepth = savedLoopDepth;
 }
 
 void Compiler::visitForStmt(ForStmt* stmt) {
     int loopStart = static_cast<int>(chunk.code.size());
     int savedLoopDepth = loopDepth;
     enterLoop();
-    
+    beginScope();
+
     // Init
     if (std::holds_alternative<Expr::Ptr>(stmt->init)) {
         if (auto expr = std::get_if<Expr::Ptr>(&stmt->init)) {
-            if (*expr) (*expr)->accept(*this);
-            emitByte(Opcode::OP_POP);
+            if (*expr) {
+                (*expr)->accept(*this);
+                if (!std::dynamic_pointer_cast<AssignExpr>(*expr)) {
+                    emitByte(Opcode::OP_POP);
+                }
+            }
         }
     } else if (std::holds_alternative<std::shared_ptr<VarDeclStmt>>(stmt->init)) {
         if (auto var = std::get_if<std::shared_ptr<VarDeclStmt>>(&stmt->init)) {
@@ -527,7 +522,9 @@ void Compiler::visitForStmt(ForStmt* stmt) {
     // Increment
     if (stmt->increment) {
         stmt->increment->accept(*this);
-        emitByte(Opcode::OP_POP);
+        if (!std::dynamic_pointer_cast<AssignExpr>(stmt->increment)) {
+            emitByte(Opcode::OP_POP);
+        }
     }
     
     // Loop back
@@ -547,9 +544,8 @@ void Compiler::visitForStmt(ForStmt* stmt) {
     chunk.code[endJump + 1] = static_cast<uint8_t>(endOffset >> 8);
     
     loopDepth = savedLoopDepth;
-    exitLoop();
+    endScope();
 }
-
 void Compiler::visitDoWhileStmt(DoWhileStmt* stmt) {
     int loopStart = static_cast<int>(chunk.code.size());
     int savedLoopDepth = loopDepth;
@@ -612,10 +608,6 @@ void Compiler::visitContinueStmt(ContinueStmt* stmt) {
 void Compiler::visitClassStmt(ClassStmt* stmt) {
     declareVariable(stmt->name);
     
-    int nameIdx = chunk.findOrAddStringConstant(stmt->name);
-    emitByte(Opcode::OP_NEW_CLASS);
-    emitByte(static_cast<uint8_t>(nameIdx));
-    
     beginScope();
     
     if (!stmt->typeParams.empty()) {
@@ -661,12 +653,48 @@ void Compiler::visitClassStmt(ClassStmt* stmt) {
     
     endScope();
     
-    int slot = resolveLocal(stmt->name, false);
-    if (slot >= 0) {
-        emitSetLocal(slot);
-    } else {
-        emitByte(Opcode::OP_SET_GLOBAL);
+    // Emit class creation bytecode (after methods are defined so closures are in constants)
+    if (!stmt->typeParams.empty()) {
+        std::string mangledName = mangleTypeName(stmt->name, stmt->typeParams);
+        
+        for (const auto& tp : stmt->typeParams) {
+            int idx = chunk.findOrAddStringConstant(tp);
+            emitByte(Opcode::OP_CONST_STRING);
+            emitByte(static_cast<uint8_t>(idx));
+        }
+        
+        int nameIdx = chunk.findOrAddStringConstant(mangledName);
+        emitByte(Opcode::OP_CONST_STRING);
         emitByte(static_cast<uint8_t>(nameIdx));
+        
+        int ctorIdx = chunk.findOrAddStringConstant("constructor");
+        emitByte(Opcode::OP_CONST_STRING);
+        emitByte(static_cast<uint8_t>(ctorIdx));
+        
+        emitByte(Opcode::OP_NEW_CLASS_GENERIC);
+        emitByte(0);
+        emitByte(static_cast<uint8_t>(stmt->typeParams.size()));
+        
+        int slot = resolveLocal(stmt->name, false);
+        if (slot >= 0) {
+            emitSetLocal(slot);
+        } else {
+            int finalIdx = chunk.findOrAddStringConstant(stmt->name);
+            emitByte(Opcode::OP_SET_GLOBAL);
+            emitByte(static_cast<uint8_t>(finalIdx));
+        }
+    } else {
+        int nameIdx = chunk.findOrAddStringConstant(stmt->name);
+        emitByte(Opcode::OP_NEW_CLASS);
+        emitByte(static_cast<uint8_t>(nameIdx));
+        
+        int slot = resolveLocal(stmt->name, false);
+        if (slot >= 0) {
+            emitSetLocal(slot);
+        } else {
+            emitByte(Opcode::OP_SET_GLOBAL);
+            emitByte(static_cast<uint8_t>(nameIdx));
+        }
     }
 }
 
@@ -799,6 +827,12 @@ void Compiler::visitExportStmt(ExportStmt* stmt) {
     }
 }
 
+void Compiler::visitPackageStmt(PackageStmt* stmt) {
+    int pkgIdx = chunk.findOrAddStringConstant(stmt->name);
+    emitByte(Opcode::OP_PACKAGE);
+    emitByte(static_cast<uint8_t>(pkgIdx));
+}
+
 void Compiler::visitTryStmt(TryStmt* stmt) {
     // OP_TRY catch_offset (2-byte jump to catch block)
     int tryCatchJump = -1;
@@ -847,67 +881,69 @@ void Compiler::visitThrowStmt(ThrowStmt* stmt) {
  void Compiler::visitSwitchStmt(SwitchStmt* stmt) {
     int savedLoopDepth = loopDepth;
     enterLoop();
-    
+
+    // Save switch value to a temp local so we can compare against each case
     stmt->expression->accept(*this);
-    
-    std::vector<int> caseOffsets;
-    int defaultJumpOffset = -1;
-    int switchEndJumpOffset = -1;
-    
+    int switchSlot = localCount++;
+    emitBytes(Opcode::OP_SET_LOCAL, static_cast<uint8_t>(switchSlot));
+
+    std::vector<int> skipOffsets;  // JUMP_IF_FALSE offsets to patch later
+    std::vector<int> caseStarts;   // bytecode position of each case start
+    std::vector<int> endJumps;     // JUMP offsets from case bodies to end
+
     for (int i = 0; i < static_cast<int>(stmt->cases.size()); i++) {
+        caseStarts.push_back(static_cast<int>(chunk.code.size()));
         auto& caseStmt = stmt->cases[i];
-        
+
         if (caseStmt.condition) {
+            emitBytes(Opcode::OP_GET_LOCAL, static_cast<uint8_t>(switchSlot));
             caseStmt.condition->accept(*this);
             emitByte(Opcode::OP_EQUAL);
-            int jumpOffset = -1;
-            emitJump(Opcode::OP_JUMP_IF_TRUE, jumpOffset);
-            caseOffsets.push_back(jumpOffset);
+
+            int skipOffset = -1;
+            emitJump(Opcode::OP_JUMP_IF_FALSE, skipOffset);
+            skipOffsets.push_back(skipOffset);
         } else {
-            defaultJumpOffset = static_cast<int>(chunk.code.size());
-            emitByte(Opcode::OP_CONST_TRUE);
-            int jumpOffset = -1;
-            emitJump(Opcode::OP_JUMP_IF_TRUE, jumpOffset);
-            caseOffsets.push_back(jumpOffset);
+            skipOffsets.push_back(-1);  // Default case, no skip needed
         }
-        
-        // Emit case body
+
+        // Case body
         for (const auto& s : caseStmt.statements) {
             s->accept(*this);
         }
-        
+
+        // Non-last cases need to jump to end after body
         if (i < static_cast<int>(stmt->cases.size()) - 1) {
             int jumpToEnd = -1;
             emitJump(Opcode::OP_JUMP, jumpToEnd);
-            caseOffsets.push_back(jumpToEnd);
+            endJumps.push_back(jumpToEnd);
         }
     }
-    
-    switchEndJumpOffset = static_cast<int>(chunk.code.size());
-    
-    // Patch all case jumps
-    for (int i = 0; i < static_cast<int>(caseOffsets.size()); i++) {
-        int caseTarget = 0;
-        if (i < static_cast<int>(caseOffsets.size()) - 1) {
-            caseTarget = caseOffsets[i] + 2;
-        } else {
-            caseTarget = switchEndJumpOffset;
-        }
-        int offset = caseTarget - (caseOffsets[i] + 2);
-        chunk.code[caseOffsets[i]] = static_cast<uint8_t>(offset);
-        chunk.code[caseOffsets[i] + 1] = static_cast<uint8_t>(offset >> 8);
+
+    int switchEnd = static_cast<int>(chunk.code.size());
+
+    // Patch skip offsets to point to next case start or switch end
+    for (int i = 0; i < static_cast<int>(skipOffsets.size()); i++) {
+        if (skipOffsets[i] < 0) continue;
+
+        int target = (i + 1 < static_cast<int>(caseStarts.size()))
+            ? caseStarts[i + 1] : switchEnd;
+
+        patchJump(skipOffsets[i], target);
     }
-    
-    // Patch break jumps
+
+    // Patch case end jumps to switch end
+    for (auto& jumpOff : endJumps) {
+        patchJump(jumpOff, switchEnd);
+    }
+
+    // Patch break jumps to switch end
     for (auto& jumpOff : loopEndJumps) {
-        int offset = switchEndJumpOffset - (jumpOff + 2);
-        chunk.code[jumpOff] = static_cast<uint8_t>(offset);
-        chunk.code[jumpOff + 1] = static_cast<uint8_t>(offset >> 8);
+        patchJump(jumpOff, switchEnd);
     }
     loopEndJumps.clear();
-    
+
     loopDepth = savedLoopDepth;
-    exitLoop();
 }
 
 void Compiler::visitDeferStmt(DeferStmt* stmt) {
@@ -1077,6 +1113,15 @@ std::string Compiler::mangleTypeName(const std::string& base, const std::vector<
     return mangled;
 }
 
+std::string Compiler::mangleTypeName(const std::string& base, const std::vector<std::string>& args) {
+    if (args.empty()) return base;
+    std::string mangled = base;
+    for (const auto& arg : args) {
+        mangled += "_" + arg;
+    }
+    return mangled;
+}
+
 void Compiler::visitStructDeclStmt(StructDeclStmt* stmt) {
     declareVariable(stmt->name);
     pushTypeParams(stmt->typeParams);
@@ -1196,13 +1241,14 @@ void Compiler::visitCallExpr(CallExpr* expr) {
         return;
     }
     
-    // Regular function call
-    expr->callee->accept(*this);
-    int argCount = 0;
-    for (const auto& arg : expr->arguments) {
+    // Regular function call - push args first (in reverse), then callee
+    std::vector<Expr::Ptr> reversedArgs = expr->arguments;
+    std::reverse(reversedArgs.begin(), reversedArgs.end());
+    for (const auto& arg : reversedArgs) {
         arg->accept(*this);
-        argCount++;
     }
+    expr->callee->accept(*this);
+    int argCount = static_cast<int>(expr->arguments.size());
     emitCall(argCount);
 }
 

@@ -42,7 +42,7 @@
 - type switch — parser + compiler implemented
 - reflection basics — not started
 
-### Phase 15: Package System
+### Phase 15: Package System ⚠️ IN PROGRESS
 - Package declarations
 - Module resolution
 - Build tooling

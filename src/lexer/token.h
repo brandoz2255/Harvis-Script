@@ -57,6 +57,7 @@ enum class TokenType {
     NEW_KEYWORD,       // new
     SUPER_KEYWORD,     // super
     THIS_KEYWORD,      // this
+    PACKAGE_KEYWORD,  // package
     EXPORT_KEYWORD,    // export
     IMPORT_KEYWORD,    // import
     FROM_KEYWORD,      // from

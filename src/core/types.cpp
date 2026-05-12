@@ -13,9 +13,7 @@ Value::~Value() {
             }
             break;
         case Kind::Object:
-            if (payload.asObject) {
-                payload.asObject->release();
-            }
+            // GC manages lifecycle - no manual release
             break;
         default:
             break;
@@ -29,9 +27,7 @@ Value::Value(const char* s)
     : kind(Kind::String), payload(new std::string(s)), type(Type::string()) {}
 
  Value::Value(RuntimeObject* obj, Type t)
-    : kind(Kind::Object), payload(obj), type(t) {
-    if (obj) obj->retain();
-}
+    : kind(Kind::Object), payload(obj), type(t) {}
 
 Value::Value(Value&& other) noexcept 
     : kind(other.kind), type(std::move(other.type)) {
@@ -110,7 +106,6 @@ Value::Value(const Value& other)
             break;
         case Kind::Object:
             payload.asObject = other.payload.asObject;
-            if (payload.asObject) payload.asObject->retain();
             break;
     }
 }
@@ -122,9 +117,7 @@ Value& Value::operator=(const Value& other) {
     if (kind == Kind::String && payload.asString) {
         delete payload.asString;
     }
-    if (kind == Kind::Object && payload.asObject) {
-        payload.asObject->release();
-    }
+    // GC manages lifecycle - no manual release on object reassignment
     
     kind = other.kind;
     type = other.type;
@@ -145,7 +138,6 @@ Value& Value::operator=(const Value& other) {
             break;
         case Kind::Object:
             payload.asObject = other.payload.asObject;
-            if (payload.asObject) payload.asObject->retain();
             break;
     }
     

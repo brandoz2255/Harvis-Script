@@ -45,6 +45,7 @@ std::string Token::tokenTypeToString(TokenType t) {
         case TokenType::NEW_KEYWORD: return "new";
         case TokenType::SUPER_KEYWORD: return "super";
         case TokenType::THIS_KEYWORD: return "this";
+        case TokenType::PACKAGE_KEYWORD: return "package";
         case TokenType::EXPORT_KEYWORD: return "export";
         case TokenType::IMPORT_KEYWORD: return "import";
         case TokenType::FROM_KEYWORD: return "from";
@@ -151,6 +152,7 @@ static std::unordered_map<std::string, TokenType> keywords = []() {
     map["new"] = TokenType::NEW_KEYWORD;
     map["super"] = TokenType::SUPER_KEYWORD;
     map["this"] = TokenType::THIS_KEYWORD;
+    map["package"] = TokenType::PACKAGE_KEYWORD;
     map["export"] = TokenType::EXPORT_KEYWORD;
     map["import"] = TokenType::IMPORT_KEYWORD;
     map["from"] = TokenType::FROM_KEYWORD;

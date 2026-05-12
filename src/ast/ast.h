@@ -54,6 +54,7 @@ class VarDeclStmt;
 class ConstDeclStmt;
 class ImportStmt;
 class ExportStmt;
+class PackageStmt;
 class TryStmt;
 class ThrowStmt;
 class StructDeclStmt;
@@ -180,6 +181,7 @@ public:
     virtual void visitConstDeclStmt(ConstDeclStmt* stmt) = 0;
     virtual void visitImportStmt(ImportStmt* stmt) = 0;
     virtual void visitExportStmt(ExportStmt* stmt) = 0;
+    virtual void visitPackageStmt(PackageStmt* stmt) = 0;
     virtual void visitTryStmt(TryStmt* stmt) = 0;
     virtual void visitThrowStmt(ThrowStmt* stmt) = 0;
     virtual void visitSwitchStmt(SwitchStmt* stmt) = 0;
@@ -579,6 +581,17 @@ public:
     std::string toString() const override { return "ContinueStmt"; }
 };
 
+class TypeParamDecl : public AstNode {
+public:
+    std::string name;
+    Type constraint;
+    
+    TypeParamDecl(SourceLocation loc, std::string n, Type c = Type::undefined())
+        : AstNode(loc), name(std::move(n)), constraint(std::move(c)) {}
+    
+    std::string toString() const override { return "TypeParamDecl(" + name + ")"; }
+};
+
 class FunctionStmt : public Stmt {
 public:
     std::string name;
@@ -695,6 +708,17 @@ public:
     
     void accept(StatementVisitor& visitor) override { visitor.visitExportStmt(this); }
     std::string toString() const override { return "ExportStmt"; }
+};
+
+class PackageStmt : public Stmt {
+public:
+    std::string name;
+    
+    PackageStmt(SourceLocation loc, std::string n)
+        : Stmt(loc), name(std::move(n)) {}
+    
+    void accept(StatementVisitor& visitor) override { visitor.visitPackageStmt(this); }
+    std::string toString() const override { return "PackageStmt(" + name + ")"; }
 };
 
 class TryStmt : public Stmt {
@@ -964,6 +988,7 @@ struct Program {
     std::string source;
     std::vector<Stmt::Ptr> statements;
     std::string filename;
+    std::string package;
     
     Program(std::string src, std::vector<Stmt::Ptr> stmts, std::string fn = "")
         : source(std::move(src)), statements(std::move(stmts)), filename(std::move(fn)) {}

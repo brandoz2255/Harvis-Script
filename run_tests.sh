@@ -60,6 +60,13 @@ if [ -d "test_classes" ]; then
     done
 fi
 
+# Generics tests
+if [ -d "test_generics" ]; then
+    for f in test_generics/*.hs; do
+        run_test "$f"
+    done
+fi
+
 echo "================================"
 echo "Test Results: $PASS passed, $FAIL failed, $TOTAL total"
 echo "================================"

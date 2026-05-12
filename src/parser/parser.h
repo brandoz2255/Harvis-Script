@@ -24,6 +24,7 @@ private:
     std::vector<Token> tokens;
     std::vector<ParserError> errors;
     int current = 0;
+    bool hasPackage = false;
     
     // Check if we've reached EOF
     bool isAtEnd() const { return peek().type == TokenType::EOF_TOKEN; }
@@ -33,6 +34,9 @@ private:
     const Token& peekNext() const { return current + 1 < static_cast<int>(tokens.size()) ? tokens[current + 1] : tokens.back(); }
     const Token& previous() const { return tokens[current - 1]; }
     const Token& advance();
+
+    // Multi-token lookahead: check if current token starts a generic call pattern <Type>(
+    bool looksLikeGenericCall() const;
     
     // Synchronization
     void synchronize();
@@ -97,6 +101,7 @@ private:
     Stmt::Ptr parseContinue();
     Stmt::Ptr parseImport();
     Stmt::Ptr parseExport();
+    Stmt::Ptr parsePackage();
     Stmt::Ptr parseTry();
     Stmt::Ptr parseThrow();
     Stmt::Ptr parseSwitch();

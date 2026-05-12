@@ -21,6 +21,9 @@ void printTokens(const std::vector<Token>& tokens) {
 }
 
 void printAST(const Program& program) {
+    if (!program.package.empty()) {
+        std::cout << "  package " << program.package << "\n";
+    }
     for (const auto& stmt : program.statements) {
         std::cout << "  " << stmt->toString() << "\n";
     }

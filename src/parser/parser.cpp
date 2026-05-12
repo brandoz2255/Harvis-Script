@@ -7,10 +7,14 @@ Parser::Parser(const std::vector<Token>& toks) : tokens(toks) {}
 
 Program Parser::parse() {
     auto statements = parseStatements();
-    if (isAtEnd()) {
-        return Program("", statements, "");
+    Program program("", statements, "");
+    for (const auto& stmt : statements) {
+        if (auto* pkg = dynamic_cast<PackageStmt*>(stmt.get())) {
+            program.package = pkg->name;
+            break;
+        }
     }
-    return Program("", statements, "");
+    return program;
 }
 
 const Token& Parser::advance() {
@@ -24,12 +28,67 @@ bool Parser::check(TokenType type) const {
     return peek().type == type;
 }
 
+bool Parser::looksLikeGenericCall() const {
+    // Check if tokens starting at current form a pattern: <Type,...>(
+    // where Type is an identifier. This distinguishes generics from comparisons.
+    if (current >= static_cast<int>(tokens.size()) || tokens[current].type != TokenType::LESS) {
+        return false;
+    }
+    int i = current + 1;
+    if (i >= static_cast<int>(tokens.size())) return false;
+
+    // After <, expect an identifier (type name)
+    if (tokens[i].type != TokenType::IDENTIFIER) return false;
+    i++;
+
+    // Scan for > (skipping comma-separated type names)
+    while (i < static_cast<int>(tokens.size())) {
+        if (tokens[i].type == TokenType::GREATER) {
+            // Check if followed by (
+            return (i + 1 < static_cast<int>(tokens.size()) &&
+                    tokens[i + 1].type == TokenType::LEFT_PAREN);
+        }
+        if (tokens[i].type == TokenType::COMMA) {
+            i++;
+            if (i >= static_cast<int>(tokens.size()) || tokens[i].type != TokenType::IDENTIFIER) {
+                return false;
+            }
+        } else if (tokens[i].type == TokenType::IDENTIFIER) {
+            // skip type name
+        } else {
+            return false;
+        }
+        i++;
+    }
+    return false;
+}
+
 bool Parser::match(TokenType type) {
     if (check(type)) {
         advance();
         return true;
     }
     return false;
+}
+
+Stmt::Ptr Parser::parsePackage() {
+    SourceLocation loc = previous().location;
+    
+    if (hasPackage) {
+        error(previous(), "Package declaration already exists.");
+        return nullptr;
+    }
+    
+    if (!check(TokenType::IDENTIFIER)) {
+        error(peek(), "Expect package name.");
+        return nullptr;
+    }
+    
+    std::string name = advance().lexeme;
+    consume(TokenType::SEMICOLON, "Expect ';' after package name.");
+    
+    hasPackage = true;
+    return std::make_shared<PackageStmt>(loc, name);
 }
 
 bool Parser::match(TokenType t1, TokenType t2) {
@@ -123,6 +182,19 @@ void Parser::synchronize() {
 std::vector<Stmt::Ptr> Parser::parseStatements() {
     std::vector<Stmt::Ptr> statements;
     while (!isAtEnd()) {
+        if (!hasPackage && check(TokenType::PACKAGE_KEYWORD)) {
+            auto stmt = parsePackage();
+            if (stmt) statements.push_back(stmt);
+            continue;
+        }
+        // Any non-package statement means we've "passed" the package declaration point
+        if (!hasPackage) {
+            hasPackage = true;  // Mark as done, allow non-package statements
+        }
+        if (!hasPackage && !statements.empty()) {
+            error(peek(), "Package declaration must be the first statement.");
+            break;
+        }
         auto stmt = parseStatement();
         if (stmt) statements.push_back(stmt);
     }
@@ -252,9 +324,7 @@ Stmt::Ptr Parser::parseFunction(bool expectName) {
             }
             if (!match(TokenType::COMMA)) break;
         }
-        if (check(TokenType::GREATER)) {
-            advance(); // consume >
-        }
+        consume(TokenType::GREATER, "Expect '>' after type parameters.");
     }
     
     // If we didn't match a name and we're at `(`, we're in a constructor context
@@ -936,11 +1006,12 @@ Expr::Ptr Parser::parseCall() {
      
      while (true) {
          // Check for generic type args followed by call: expr<Type>(args)
-         if (check(TokenType::LESS) && peekNext().type != TokenType::MINUS) {
-             std::vector<Type> typeArgs;
-             advance();  // consume '<'
-             while (!check(TokenType::GREATER) && !isAtEnd()) {
-                 typeArgs.push_back(parseType());
+         bool isGenericCandidate = previous().type == TokenType::IDENTIFIER || previous().type == TokenType::RIGHT_PAREN || previous().type == TokenType::RIGHT_BRACKET || previous().type == TokenType::GREATER;
+         if (isGenericCandidate && looksLikeGenericCall()) {
+              advance();  // consume '<'
+              std::vector<Type> typeArgs;
+              while (!check(TokenType::GREATER) && !isAtEnd()) {
+                  typeArgs.push_back(parseType());
                  if (!match(TokenType::COMMA)) break;
              }
              consume(TokenType::GREATER, "Expect '>' after type arguments.");
@@ -953,34 +1024,12 @@ Expr::Ptr Parser::parseCall() {
                  break;
              }
          } else if (match(TokenType::LEFT_PAREN)) {
-             std::vector<Type> typeArgs;
-             // Check for generic type args: expr<Type>(args)
-             if (check(TokenType::LESS)) {
-                 advance();
-                 while (!check(TokenType::GREATER) && !isAtEnd()) {
-                     typeArgs.push_back(parseType());
-                     if (!match(TokenType::COMMA)) break;
-                 }
-                 consume(TokenType::GREATER, "Expect '>' after type arguments.");
-             }
              auto args = parseArgumentList();
-             expr = std::make_shared<CallExpr>(previous().location, expr, previous(), std::move(args), std::move(typeArgs));
+             expr = std::make_shared<CallExpr>(previous().location, expr, previous(), std::move(args), std::vector<Type>{});
          } else if (match(TokenType::LEFT_BRACKET)) {
-             bool optional = false;
-             if (match(TokenType::DOT_QUESTION)) {
-                 optional = true;
-             } else {
-                 // Put back the DOT token
-                 // Actually we need to check for ?[ before [
-             }
-             // Re-check for the bracket
-             if (!match(TokenType::LEFT_BRACKET)) {
-                 // This shouldn't happen, but handle gracefully
-                 break;
-             }
              auto index = parseExpression();
              consume(TokenType::RIGHT_BRACKET, "Expect ']' after index expression.");
-             expr = std::make_shared<IndexExpr>(previous().location, expr, index, optional);
+             expr = std::make_shared<IndexExpr>(previous().location, expr, index, false);
          } else if (match(TokenType::DOT)) {
              bool optional = false;
              if (match(TokenType::QUESTION)) {
@@ -1492,7 +1541,7 @@ Expr::Ptr Parser::parseNewExpr() {
     
     // Class instantiation: new TypeName<T>(args)
     std::vector<Expr::Ptr> args;
-    if (check(TokenType::LEFT_PAREN)) {
+    if (match(TokenType::LEFT_PAREN)) {
         args = parseArgumentList();
     }
     

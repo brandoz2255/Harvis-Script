@@ -107,6 +107,7 @@ enum class Opcode : uint8_t {
     OP_DELETE,              // Pop key, pop map, push success bool
     OP_IMPORT,              // Pop module name, push imported values
     OP_EXPORT,              // Mark previous value as exported
+    OP_PACKAGE,             // Declare package name
     
     // Range loop
     OP_RANGE_ARRAY,       // Pop array, push iterator
@@ -240,6 +241,7 @@ inline const char* opcodeName(Opcode op) {
         OP(OP_DELETE)
         OP(OP_IMPORT)
         OP(OP_EXPORT)
+        OP(OP_PACKAGE)
         OP(OP_RANGE_ARRAY)
         OP(OP_RANGE_NEXT)
         OP(OP_RANGE_STRING)

@@ -1,0 +1,13 @@
+--- src/vm/vm.cpp
++++ src/vm/vm.cpp
+@@ -488,6 +488,10 @@ case Opcode::OP_CALL: {
+                    int argCount = chunk->code[callStack.top().ip++];
+ 
+                    // Callee is always at top of stack (peek(0))
+                    Value callee = peek(0);
++                   
++                    // DEBUG
++                    fprintf(stderr, "OP_CALL: callee type=%d, isObj=%d, str=%s\n", 
++                        callee.isObject() ? (int)callee.asObject()->type : -1, callee.isObject(), callee.toString().c_str());
+ 
+                    // Args are at stack.size()-argCount-1 through stack.size()-2

@@ -85,6 +85,7 @@ private:
     void popTypeParams();
     std::string resolveTypeParam(const std::string& name);
     std::string mangleTypeName(const std::string& base, const std::vector<Type>& args);
+    std::string mangleTypeName(const std::string& base, const std::vector<std::string>& args);
     
     // Expression visitors
     void visitLiteralExpr(LiteralExpr* expr) override;
@@ -122,6 +123,7 @@ private:
     void visitConstDeclStmt(ConstDeclStmt* stmt) override;
     void visitImportStmt(ImportStmt* stmt) override;
     void visitExportStmt(ExportStmt* stmt) override;
+    void visitPackageStmt(PackageStmt* stmt) override;
     void visitTryStmt(TryStmt* stmt) override;
     void visitThrowStmt(ThrowStmt* stmt) override;
     void visitSwitchStmt(SwitchStmt* stmt) override;

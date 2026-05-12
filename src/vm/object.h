@@ -31,23 +31,18 @@ enum class ObjectType {
     Map,
     Channel,
     Mutex,
-    WaitGroup
+    WaitGroup,
+    ArrayMethod
 };
 
-// Base object class with reference counting
+// Base object class - lifecycle managed by GC
 class RuntimeObject {
 public:
     ObjectType type;
     Type declaredType;
-    int refCount;
-    
-    RuntimeObject(ObjectType t, Type dt = Type::object()) : type(t), declaredType(dt), refCount(1) {}
-    
-    void retain() { refCount++; }
-    void release() { 
-        if (--refCount <= 0) delete this; 
-    }
-    
+
+    RuntimeObject(ObjectType t, Type dt = Type::object()) : type(t), declaredType(dt) {}
+
     virtual ~RuntimeObject() = default;
     
     virtual std::string toString() const {
@@ -326,6 +321,21 @@ public:
     
     std::string toString() const override {
         return "[WaitGroup counter=" + std::to_string(counter) + "]";
+    }
+};
+
+// Array method binding (like BoundMethod but for array built-in methods)
+class ArrayMethodObj : public RuntimeObject {
+public:
+    ArrayObj* array;
+    std::string methodName;
+
+    ArrayMethodObj(ArrayObj* arr, const std::string& method)
+        : RuntimeObject(ObjectType::ArrayMethod, Type::function()),
+          array(arr), methodName(method) {}
+
+    std::string toString() const override {
+        return "[ArrayMethod " + methodName + "]";
     }
 };
 

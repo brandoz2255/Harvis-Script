@@ -46,6 +46,14 @@
 
 ---
 
+## Phase D: Package System ⚠️ IN PROGRESS
+- Package declarations
+- Module resolution
+- Build tooling
+- Standard library basics
+
+---
+
 ## Current Test Results
 
 ```
